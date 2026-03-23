@@ -12,8 +12,8 @@ This guide walks you through installing, configuring, and running ClawOps for th
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/clawops.git
-cd clawops
+git clone https://github.com/vixi-ai/claw-ops.git
+cd claw-ops
 ```
 
 ## 2. Set Up PostgreSQL

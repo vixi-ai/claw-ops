@@ -11,10 +11,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/vixi-ai/claw-ops"><img src="https://img.shields.io/github/stars/vixi-ai/claw-ops?style=flat" alt="GitHub Stars"></a>
+  <a href="https://github.com/vixi-ai/claw-ops/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vixi-ai/claw-ops" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Java-21-orange" alt="Java 21">
   <img src="https://img.shields.io/badge/Spring%20Boot-4.0.3-green" alt="Spring Boot">
   <img src="https://img.shields.io/badge/PostgreSQL-17-blue" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License">
 </p>
 
 ---
@@ -58,8 +59,8 @@ ClawOps was designed for the [OpenClaw](https://github.com/openclaw) ecosystem b
 ### Using Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/your-org/clawops.git
-cd clawops
+git clone https://github.com/vixi-ai/claw-ops.git
+cd claw-ops
 cp .env.example .env           # fill in MASTER_ENCRYPTION_KEY, JWT_SECRET, etc.
 docker-compose up -d           # starts PostgreSQL
 ./mvnw spring-boot:run         # starts the application
@@ -154,7 +155,13 @@ ClawOps includes a lightweight dev admin panel at `/dev/` with pages for each mo
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to ClawOps.
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to get started.
+
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+
+## Security
+
+To report a security vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 

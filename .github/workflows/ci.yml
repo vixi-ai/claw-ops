@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: openclaw
+          POSTGRES_USER: openclaw
+          POSTGRES_PASSWORD: testpassword
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openclaw -d openclaw"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build and test
+        run: ./mvnw clean install --batch-mode --no-transfer-progress
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: openclaw
+          DB_USERNAME: openclaw
+          DB_PASSWORD: testpassword
+          MASTER_ENCRYPTION_KEY: dGVzdGtleWZvcmNpb25seXRoaXJ0eXR3b2J5dGVz
+          JWT_SECRET: Y2l0ZXN0and0c2VjcmV0dGhhdGlzbG9uZ2Vub3VnaGZvcmhtYWM=
+          ADMIN_EMAIL: admin@test.dev
+          ADMIN_USERNAME: admin
+          ADMIN_PASSWORD: testpassword123

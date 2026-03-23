@@ -2,9 +2,14 @@
 
 Thank you for your interest in contributing to ClawOps! This document provides guidelines and instructions for contributing.
 
+## Code of Conduct
+
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to keep our community welcoming and respectful.
+
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/your-org/clawops/issues) to report bugs or request features
+- Use [GitHub Issues](https://github.com/vixi-ai/claw-ops/issues) to report bugs or request features
+- For **security vulnerabilities**, please see [SECURITY.md](SECURITY.md) — do not open a public issue
 - Include steps to reproduce for bug reports
 - Include your Java version, OS, and PostgreSQL version
 
@@ -15,12 +20,16 @@ Thank you for your interest in contributing to ClawOps! This document provides g
 - Java 21+
 - PostgreSQL 17+
 - Maven 3.9+ (or use the included `./mvnw` wrapper)
+- Docker + Docker Compose (optional, for running PostgreSQL)
 
 ### Getting Started
 
+1. **Fork** the repository on GitHub
+2. Clone your fork:
+
 ```bash
-git clone https://github.com/your-org/clawops.git
-cd clawops
+git clone https://github.com/<your-username>/claw-ops.git
+cd claw-ops
 cp .env.example .env
 # Edit .env with your database credentials and keys
 
