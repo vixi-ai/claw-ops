@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audit Log - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+    <style>
+        .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+        .filters .form-group { margin-bottom: 0; min-width: 150px; }
+        .filters input, .filters select { padding: 6px 10px; font-size: 13px; }
+        .auto-refresh { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+        .auto-refresh input { width: auto; }
+        .details-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+    </style>
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <div class="flex-between mb-16">
+            <h2>Audit Log</h2>
+            <label class="auto-refresh">
+                <input type="checkbox" id="autoRefresh"> Auto-refresh (10s)
+            </label>
+        </div>
+
+        <div class="card">
+            <div class="filters">
+                <div class="form-group">
+                    <label>Action</label>
+                    <select id="filterAction">
+                        <option value="">All actions</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Entity Type</label>
+                    <select id="filterEntityType">
+                        <option value="">All types</option>
+                        <option value="USER">USER</option>
+                        <option value="SERVER">SERVER</option>
+                        <option value="SECRET">SECRET</option>
+                        <option value="DEPLOYMENT">DEPLOYMENT</option>
+                        <option value="TEMPLATE">TEMPLATE</option>
+                        <option value="DOMAIN">DOMAIN</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>User ID</label>
+                    <input type="text" id="filterUserId" placeholder="UUID">
+                </div>
+                <div class="form-group">
+                    <label>From</label>
+                    <input type="datetime-local" id="filterFrom">
+                </div>
+                <div class="form-group">
+                    <label>To</label>
+                    <input type="datetime-local" id="filterTo">
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="loadLogs(0)">Filter</button>
+                <button class="btn btn-ghost btn-sm" onclick="clearFilters()">Clear</button>
+            </div>
+        </div>
+
+        <div class="card" style="padding: 0; overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Action</th>
+                        <th>Entity</th>
+                        <th>User ID</th>
+                        <th>Details</th>
+                        <th>IP</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTable">
+                    <tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination" id="pagination"></div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Audit Log');
+
+        const actions = [
+            'USER_LOGIN','USER_LOGIN_FAILED','USER_LOGOUT','USER_CREATED','USER_UPDATED',
+            'USER_DISABLED','USER_DELETED','USER_PASSWORD_CHANGED',
+            'SERVER_CREATED','SERVER_UPDATED','SERVER_DELETED','SERVER_CONNECTION_TESTED',
+            'SECRET_CREATED','SECRET_UPDATED','SECRET_DELETED',
+            'SSH_COMMAND_EXECUTED',
+            'TERMINAL_SESSION_OPENED','TERMINAL_SESSION_CLOSED',
+            'DEPLOYMENT_STARTED','DEPLOYMENT_COMPLETED','DEPLOYMENT_FAILED',
+            'TEMPLATE_CREATED','TEMPLATE_DEPLOYED',
+            'DOMAIN_PROVISIONED','DOMAIN_SSL_ISSUED','DOMAIN_DELETED'
+        ];
+
+        const actionSelect = document.getElementById('filterAction');
+        actions.forEach(a => {
+            const opt = document.createElement('option');
+            opt.value = a; opt.textContent = a;
+            actionSelect.appendChild(opt);
+        });
+
+        let currentPage = 0;
+        const pageSize = 25;
+        let refreshInterval = null;
+
+        document.getElementById('autoRefresh').addEventListener('change', (e) => {
+            if (e.target.checked) {
+                refreshInterval = setInterval(() => loadLogs(currentPage), 10000);
+            } else {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        });
+
+        function buildQuery(page) {
+            const params = new URLSearchParams();
+            params.set('page', page);
+            params.set('size', pageSize);
+            params.set('sort', 'createdAt,desc');
+
+            const action = document.getElementById('filterAction').value;
+            const entityType = document.getElementById('filterEntityType').value;
+            const userId = document.getElementById('filterUserId').value.trim();
+            const from = document.getElementById('filterFrom').value;
+            const to = document.getElementById('filterTo').value;
+
+            if (action) params.set('action', action);
+            if (entityType) params.set('entityType', entityType);
+            if (userId) params.set('userId', userId);
+            if (from) params.set('from', new Date(from).toISOString());
+            if (to) params.set('to', new Date(to).toISOString());
+
+            return params.toString();
+        }
+
+        async function loadLogs(page = 0) {
+            currentPage = page;
+            const res = await apiFetch(`/audit/logs?${buildQuery(page)}`);
+            if (!res.ok) { showError('Failed to load audit logs'); return; }
+            const data = await res.json();
+            renderTable(data.content);
+            renderPagination(data);
+        }
+
+        function renderTable(logs) {
+            const tbody = document.getElementById('logsTable');
+            if (!logs.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px;">No audit logs found</td></tr>';
+                return;
+            }
+            tbody.innerHTML = logs.map(l => `
+                <tr>
+                    <td class="text-sm text-muted" style="white-space:nowrap;">${formatDate(l.createdAt)}</td>
+                    <td><span style="color:${actionColor(l.action)}">${l.action}</span></td>
+                    <td>${esc(l.entityType)}${l.entityId ? '<br><span class="text-muted text-sm">' + l.entityId.substring(0,8) + '...</span>' : ''}</td>
+                    <td class="text-sm text-muted">${l.userId ? l.userId.substring(0,8) + '...' : '-'}</td>
+                    <td class="details-cell" title="${esc(l.details || '')}">${esc(l.details || '-')}</td>
+                    <td class="text-sm text-muted">${esc(l.ipAddress || '-')}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderPagination(data) {
+            const el = document.getElementById('pagination');
+            if (data.totalPages <= 1) { el.innerHTML = `<span>${data.totalElements} entries</span>`; return; }
+            el.innerHTML = `
+                <button class="btn btn-ghost btn-sm" ${data.first ? 'disabled' : ''} onclick="loadLogs(${currentPage - 1})">Prev</button>
+                <span>Page ${data.number + 1} of ${data.totalPages} (${data.totalElements} entries)</span>
+                <button class="btn btn-ghost btn-sm" ${data.last ? 'disabled' : ''} onclick="loadLogs(${currentPage + 1})">Next</button>
+            `;
+        }
+
+        function actionColor(action) {
+            if (action.includes('FAILED')) return 'var(--danger)';
+            if (action.includes('DELETED') || action.includes('DISABLED')) return 'var(--warning)';
+            if (action.includes('LOGIN') || action.includes('CREATED')) return 'var(--success)';
+            return 'var(--text)';
+        }
+
+        function clearFilters() {
+            document.getElementById('filterAction').value = '';
+            document.getElementById('filterEntityType').value = '';
+            document.getElementById('filterUserId').value = '';
+            document.getElementById('filterFrom').value = '';
+            document.getElementById('filterTo').value = '';
+            loadLogs(0);
+        }
+
+        function esc(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        loadLogs();
+    </script>
+</body>
+</html>

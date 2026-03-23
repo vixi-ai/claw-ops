@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domains - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+    <style>
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .section-header h2 { margin: 0; }
+        .section { margin-bottom: 32px; }
+
+        /* Modal */
+        .modal-overlay .modal { max-width: 480px; }
+        .field-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; }
+        .field-label .req { color: var(--danger); opacity: 0.7; }
+        .field-label .opt { font-weight: 400; opacity: 0.5; margin-left: 4px; }
+
+        /* Status badges */
+        .badge-verified { background: #d1fae5; color: #065f46; }
+        .badge-provisioning { background: #fef3c7; color: #92400e; }
+        .badge-failed { background: #fee2e2; color: #991b1b; }
+        .badge-released { background: var(--surface-hover); color: var(--text-muted); }
+
+        /* Expandable account rows */
+        .account-row { cursor: pointer; }
+        .account-row:hover { background: var(--surface-hover); }
+        .expand-icon { display: inline-block; width: 16px; font-size: 10px; color: var(--text-muted); transition: transform 0.15s; }
+        .expand-icon.open { transform: rotate(90deg); }
+        .domains-row { display: none; }
+        .domains-row.open { display: table-row; }
+        .domains-inner { padding: 8px 16px 12px 32px; background: var(--surface-hover); }
+        .domains-inner table { margin: 0; font-size: 12px; }
+        .domains-inner table th { font-size: 10px; padding: 4px 8px; }
+        .domains-inner table td { padding: 6px 8px; }
+        .domains-inner .empty-msg { color: var(--text-muted); font-size: 12px; padding: 12px 0; }
+
+        /* Sync result toast */
+        .sync-info { font-size: 11px; color: var(--text-muted); margin-left: 8px; }
+    </style>
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <!-- ═══ SECTION 1: PROVIDER ACCOUNTS + DOMAINS ═══ -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Provider Accounts & Domains</h2>
+                <button class="btn btn-primary" onclick="showProviderModal()">+ Add Account</button>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead><tr><th></th><th>Account</th><th>Provider</th><th>Health</th><th>Domains</th><th>Created</th><th>Actions</th></tr></thead>
+                    <tbody id="accountsTable"><tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+            <div class="pagination" id="accountsPagination"></div>
+        </div>
+
+        <!-- ═══ SECTION 2: SUBDOMAINS (DOMAIN ASSIGNMENTS) ═══ -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Subdomains</h2>
+                <div style="display:flex;gap:8px;">
+                    <select id="filterZone" onchange="loadAssignments()" style="font-size:12px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);">
+                        <option value="">All domains</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="showCustomAssignModal()">+ Custom Record</button>
+                </div>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Hostname</th><th>Type</th><th>Target</th><th>Domain</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                    <tbody id="assignmentsTable"><tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+            <div class="pagination" id="assignmentsPagination"></div>
+        </div>
+    </div>
+
+    <!-- ═══ Provider Account Modal ═══ -->
+    <div class="modal-overlay" id="providerModal">
+        <div class="modal">
+            <h3>Add Provider Account</h3>
+            <form id="providerForm">
+                <div class="form-group">
+                    <label class="field-label">Account Name <span class="req">*</span></label>
+                    <input type="text" id="provDisplayName" required maxlength="100" placeholder="e.g. My Namecheap Account">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Provider Type <span class="req">*</span></label>
+                    <select id="provType" required onchange="updateApiKeyLabel()">
+                        <option value="CLOUDFLARE">Cloudflare</option>
+                        <option value="NAMECHEAP">Namecheap</option>
+                        <option value="GODADDY">GoDaddy</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="field-label" id="apiKeyLabel">API Token <span class="req">*</span></label>
+                    <input type="password" id="provApiKey" required placeholder="Paste your API token here" autocomplete="off" style="font-family:var(--mono);font-size:12px;">
+                    <small class="text-muted" id="apiKeyHint" style="font-size:10px;margin-top:4px;display:block;">Cloudflare: API Token from dashboard (not Global API Key)</small>
+                </div>
+                <div id="namecheapFields" style="display:none;">
+                    <div class="form-group">
+                        <label class="field-label">API Username <span class="req">*</span></label>
+                        <input type="text" id="provNcUsername" placeholder="Your Namecheap username" maxlength="100">
+                        <small class="text-muted" style="font-size:10px;margin-top:4px;display:block;">Whitelist your server's public IP in Namecheap: Profile > Tools > API Access</small>
+                    </div>
+                </div>
+                <div id="provModalAlert" class="alert"></div>
+                <div class="flex-between mt-8">
+                    <button type="button" class="btn btn-ghost" onclick="closeProviderModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="provSubmitBtn">Add Account</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ═══ Custom Domain Assignment Modal ═══ -->
+    <div class="modal-overlay" id="customAssignModal">
+        <div class="modal">
+            <h3>Add Custom DNS Record</h3>
+            <form id="customAssignForm">
+                <div class="form-group">
+                    <label class="field-label">Domain <span class="req">*</span></label>
+                    <select id="customZone" required>
+                        <option value="">Select a domain...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Hostname <span class="req">*</span></label>
+                    <input type="text" id="customHostname" required placeholder="e.g. app.example.com">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Record Type <span class="req">*</span></label>
+                    <select id="customRecordType" required>
+                        <option value="A">A</option>
+                        <option value="AAAA">AAAA</option>
+                        <option value="CNAME">CNAME</option>
+                        <option value="TXT">TXT</option>
+                        <option value="MX">MX</option>
+                        <option value="NS">NS</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Target Value <span class="req">*</span></label>
+                    <input type="text" id="customTarget" required placeholder="e.g. 192.168.1.1">
+                </div>
+                <div id="customAssignAlert" class="alert"></div>
+                <div class="flex-between mt-8">
+                    <button type="button" class="btn btn-ghost" onclick="closeCustomAssignModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Domains');
+
+        const pageSize = 15;
+        let accountPage = 0, assignPage = 0;
+
+        // Caches
+        let accountsCache = [];
+        let zonesCache = [];
+        let domainsByAccount = {}; // accountId -> zones[]
+
+        function esc(str) {
+            if (!str) return '';
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        // ══════════════════════════════════════
+        //  PROVIDER ACCOUNTS + DOMAINS
+        // ══════════════════════════════════════
+
+        const healthBadge = {
+            HEALTHY: 'badge-active', DEGRADED: 'badge-warning',
+            UNREACHABLE: 'badge-error', UNKNOWN: 'badge-soon'
+        };
+
+        async function loadAccounts(page = 0) {
+            accountPage = page;
+            const [accRes, zoneRes] = await Promise.all([
+                apiFetch(`/provider-accounts?page=${page}&size=${pageSize}&sort=createdAt,desc`),
+                apiFetch('/zones?page=0&size=500&sort=zoneName,asc')
+            ]);
+            if (!accRes.ok) { showError('Failed to load provider accounts'); return; }
+
+            const accData = await accRes.json();
+            accountsCache = accData.content || [];
+
+            // Build zones cache and group by account
+            domainsByAccount = {};
+            if (zoneRes.ok) {
+                const zoneData = await zoneRes.json();
+                zonesCache = zoneData.content || [];
+                for (const z of zonesCache) {
+                    if (!domainsByAccount[z.providerAccountId]) domainsByAccount[z.providerAccountId] = [];
+                    domainsByAccount[z.providerAccountId].push(z);
+                }
+            }
+
+            renderAccounts(accData);
+            populateZoneFilter();
+        }
+
+        function renderAccounts(data) {
+            const tbody = document.getElementById('accountsTable');
+            const items = data.content || [];
+            if (!items.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;">No provider accounts yet. Add one to get started.</td></tr>';
+                renderPagination(data, 'accountsPagination', 'loadAccounts', 'accounts');
+                return;
+            }
+
+            let html = '';
+            for (const p of items) {
+                const domains = domainsByAccount[p.id] || [];
+                const domainCount = domains.length;
+
+                html += `
+                <tr class="account-row" onclick="toggleAccountDomains('${p.id}')">
+                    <td style="width:24px;"><span class="expand-icon" id="icon-${p.id}">&#9654;</span></td>
+                    <td><strong>${esc(p.displayName)}</strong></td>
+                    <td><span class="badge">${p.providerType}</span></td>
+                    <td><span class="badge ${healthBadge[p.healthStatus] || 'badge-soon'}">${p.healthStatus}</span></td>
+                    <td class="text-sm">${domainCount} domain${domainCount !== 1 ? 's' : ''}</td>
+                    <td class="text-sm text-muted">${formatDate(p.createdAt)}</td>
+                    <td style="white-space:nowrap;" onclick="event.stopPropagation()">
+                        <button class="btn btn-ghost btn-sm" onclick="syncDomains('${p.id}', this)">Sync</button>
+                        <button class="btn btn-ghost btn-sm" onclick="validateProvider('${p.id}', this)">Validate</button>
+                        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteProvider('${p.id}','${esc(p.displayName)}')">Delete</button>
+                    </td>
+                </tr>
+                <tr class="domains-row" id="domains-${p.id}">
+                    <td colspan="7" style="padding:0;">
+                        <div class="domains-inner">
+                            ${renderDomainsList(domains, p.id)}
+                        </div>
+                    </td>
+                </tr>`;
+            }
+            tbody.innerHTML = html;
+            renderPagination(data, 'accountsPagination', 'loadAccounts', 'accounts');
+        }
+
+        function renderDomainsList(domains, accountId) {
+            if (!domains.length) {
+                return '<div class="empty-msg">No domains found. Click "Sync" to import domains from this provider.</div>';
+            }
+            let html = `<table style="width:100%;">
+                <thead><tr><th>Domain</th><th>Status</th><th>Default</th><th>TTL</th><th>Actions</th></tr></thead>
+                <tbody>`;
+            for (const z of domains) {
+                html += `<tr>
+                    <td><strong>${esc(z.zoneName)}</strong></td>
+                    <td>${z.active ? '<span class="badge badge-active">Active</span>' : '<span class="badge badge-soon">Inactive</span>'}</td>
+                    <td>${z.defaultForAutoAssign ? '<span class="badge badge-verified">Default</span>' : '-'}</td>
+                    <td>${z.defaultTtl}s</td>
+                    <td style="white-space:nowrap;">
+                        ${z.active && !z.defaultForAutoAssign ? `<button class="btn btn-ghost btn-sm" onclick="setDefaultZone('${z.id}', this)">Set Default</button>` : ''}
+                        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteZone('${z.id}','${esc(z.zoneName)}')">Delete</button>
+                    </td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+            return html;
+        }
+
+        function toggleAccountDomains(accountId) {
+            const row = document.getElementById('domains-' + accountId);
+            const icon = document.getElementById('icon-' + accountId);
+            row.classList.toggle('open');
+            icon.classList.toggle('open');
+        }
+
+        async function syncDomains(accountId, btn) {
+            btn.textContent = 'Syncing...'; btn.disabled = true;
+            try {
+                const res = await apiFetch(`/provider-accounts/${accountId}/sync-domains`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json();
+                    showError('Sync failed: ' + (err.message || JSON.stringify(err)));
+                    return;
+                }
+                const data = await res.json();
+                showSuccess(`Synced: ${data.total} found, ${data.imported} imported, ${data.skipped} already existed`);
+                loadAccounts(accountPage);
+            } catch (e) { showError('Sync error: ' + e.message); }
+            finally { btn.textContent = 'Sync'; btn.disabled = false; }
+        }
+
+        async function validateProvider(id, btn) {
+            btn.textContent = 'Validating...'; btn.disabled = true;
+            try {
+                const res = await apiFetch(`/provider-accounts/${id}/validate`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json();
+                    showError('Validation failed: ' + (err.message || JSON.stringify(err)));
+                    return;
+                }
+                const data = await res.json();
+                if (data.valid) showSuccess('Credentials valid: ' + (data.message || ''));
+                else showError('Credentials invalid: ' + (data.message || ''));
+                loadAccounts(accountPage);
+            } catch (e) { showError('Validate error: ' + e.message); }
+            finally { btn.textContent = 'Validate'; btn.disabled = false; }
+        }
+
+        async function deleteProvider(id, name) {
+            if (!confirm(`Delete provider account "${name}"? All imported domains will also be removed.`)) return;
+            const res = await apiFetch(`/provider-accounts/${id}`, { method: 'DELETE' });
+            if (!res.ok && res.status !== 204) { const e = await res.json(); showError(e.message || 'Delete failed'); return; }
+            loadAccounts(accountPage);
+            showSuccess('Provider account deleted');
+        }
+
+        async function setDefaultZone(id, btn) {
+            btn.textContent = 'Setting...'; btn.disabled = true;
+            try {
+                const res = await apiFetch(`/zones/${id}/set-default`, { method: 'POST' });
+                if (!res.ok) {
+                    const e = await res.json();
+                    showError('Set default failed: ' + (e.message || JSON.stringify(e)));
+                    return;
+                }
+                showSuccess('Domain set as default for auto-assign');
+                loadAccounts(accountPage);
+            } catch (e) { showError('Error: ' + e.message); }
+            finally { btn.textContent = 'Set Default'; btn.disabled = false; }
+        }
+
+        async function deleteZone(id, name) {
+            if (!confirm(`Delete domain "${name}"?`)) return;
+            const res = await apiFetch(`/zones/${id}`, { method: 'DELETE' });
+            if (!res.ok && res.status !== 204) { const e = await res.json(); showError(e.message || 'Delete failed'); return; }
+            loadAccounts(accountPage);
+            showSuccess('Domain removed');
+        }
+
+        // ── Provider Modal ──
+        function showProviderModal() {
+            document.getElementById('provDisplayName').value = '';
+            document.getElementById('provType').value = 'CLOUDFLARE';
+            document.getElementById('provApiKey').value = '';
+            document.getElementById('provNcUsername').value = '';
+            hideAlert('provModalAlert');
+            updateApiKeyLabel();
+            document.getElementById('providerModal').classList.add('show');
+        }
+        function closeProviderModal() { document.getElementById('providerModal').classList.remove('show'); }
+
+        function updateApiKeyLabel() {
+            const type = document.getElementById('provType').value;
+            const label = document.getElementById('apiKeyLabel');
+            const hint = document.getElementById('apiKeyHint');
+            const ncFields = document.getElementById('namecheapFields');
+
+            ncFields.style.display = type === 'NAMECHEAP' ? 'block' : 'none';
+
+            if (type === 'CLOUDFLARE') {
+                label.innerHTML = 'API Token <span class="req">*</span>';
+                hint.textContent = 'Cloudflare: API Token from dashboard (not Global API Key)';
+            } else if (type === 'NAMECHEAP') {
+                label.innerHTML = 'API Key <span class="req">*</span>';
+                hint.textContent = 'Namecheap: API Key from Profile > Tools > API Access';
+            } else if (type === 'GODADDY') {
+                label.innerHTML = 'API Key <span class="req">*</span>';
+                hint.textContent = 'GoDaddy: API Key (key:secret format)';
+            }
+        }
+
+        async function createDnsSecret(name, value) {
+            const res = await apiFetch('/secrets', {
+                method: 'POST',
+                body: JSON.stringify({ name, type: 'DNS_TOKEN', value })
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.message || 'Failed to store API key');
+            }
+            return (await res.json()).id;
+        }
+
+        document.getElementById('providerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlert('provModalAlert');
+            const btn = document.getElementById('provSubmitBtn');
+            btn.disabled = true; btn.textContent = 'Adding...';
+
+            try {
+                const displayName = document.getElementById('provDisplayName').value.trim();
+                const providerType = document.getElementById('provType').value;
+                const apiKey = document.getElementById('provApiKey').value.trim();
+
+                if (!displayName) { showError('Account name is required', 'provModalAlert'); return; }
+                if (!apiKey) { showError('API key/token is required', 'provModalAlert'); return; }
+
+                let providerSettings = null;
+                if (providerType === 'NAMECHEAP') {
+                    const ncUsername = document.getElementById('provNcUsername').value.trim();
+                    if (!ncUsername) { showError('API Username is required for Namecheap', 'provModalAlert'); return; }
+                    providerSettings = { apiUser: ncUsername };
+                }
+
+                const ts = Date.now();
+                const credentialId = await createDnsSecret(
+                    `${displayName}-${providerType.toLowerCase()}-${ts}`,
+                    apiKey
+                );
+
+                const body = { displayName, providerType, credentialId };
+                if (providerSettings) body.providerSettings = providerSettings;
+
+                const res = await apiFetch('/provider-accounts', {
+                    method: 'POST',
+                    body: JSON.stringify(body)
+                });
+                if (!res.ok) { const err = await res.json(); showError(err.message || 'Create failed', 'provModalAlert'); return; }
+
+                closeProviderModal();
+                showSuccess('Account added — domains will be synced automatically');
+                loadAccounts(accountPage);
+            } catch (err) {
+                showError(err.message, 'provModalAlert');
+            } finally {
+                btn.disabled = false; btn.textContent = 'Add Account';
+            }
+        });
+
+        // ══════════════════════════════════════
+        //  SUBDOMAINS (DOMAIN ASSIGNMENTS)
+        // ══════════════════════════════════════
+
+        const statusBadge = {
+            REQUESTED: 'badge-soon', PROVISIONING: 'badge-provisioning',
+            DNS_CREATED: 'badge-active', VERIFIED: 'badge-verified',
+            ACTIVE: 'badge-active', FAILED: 'badge-failed',
+            RELEASING: 'badge-provisioning', RELEASED: 'badge-released'
+        };
+
+        function populateZoneFilter() {
+            const sel = document.getElementById('filterZone');
+            const current = sel.value;
+            sel.innerHTML = '<option value="">All domains</option>' +
+                zonesCache.filter(z => z.active).map(z => `<option value="${z.id}" ${z.id === current ? 'selected' : ''}>${esc(z.zoneName)}</option>`).join('');
+        }
+
+        async function loadAssignments(page = 0) {
+            assignPage = page;
+            let url = `/domain-assignments?page=${page}&size=${pageSize}`;
+            const filterZone = document.getElementById('filterZone').value;
+            if (filterZone) url += `&zoneId=${filterZone}`;
+            const res = await apiFetch(url);
+            if (!res.ok) { showError('Failed to load subdomains'); return; }
+            const data = await res.json();
+            renderAssignments(data);
+        }
+
+        function renderAssignments(data) {
+            const tbody = document.getElementById('assignmentsTable');
+            const items = data.content || [];
+            if (!items.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;">No subdomains found. Subdomains are created automatically when you add servers.</td></tr>';
+                renderPagination(data, 'assignmentsPagination', 'loadAssignments', 'subdomains');
+                return;
+            }
+            tbody.innerHTML = items.map(a => `
+                <tr>
+                    <td><strong style="font-family:var(--mono);font-size:12px;">${esc(a.hostname)}</strong></td>
+                    <td><span class="badge">${a.recordType}</span></td>
+                    <td class="text-sm" style="font-family:var(--mono);">${esc(a.targetValue)}</td>
+                    <td class="text-sm">${esc(a.zoneName || '-')}</td>
+                    <td><span class="badge ${statusBadge[a.status] || 'badge-soon'}">${a.status}</span></td>
+                    <td class="text-sm text-muted">${formatDate(a.createdAt)}</td>
+                    <td style="white-space:nowrap;">
+                        ${a.status !== 'RELEASED' && a.status !== 'VERIFIED' ? `<button class="btn btn-ghost btn-sm" onclick="verifyAssignment('${a.id}', this)">Verify</button>` : ''}
+                        ${a.status !== 'RELEASED' ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="releaseAssignment('${a.id}','${esc(a.hostname)}')">Release</button>` : ''}
+                    </td>
+                </tr>
+            `).join('');
+            renderPagination(data, 'assignmentsPagination', 'loadAssignments', 'subdomains');
+        }
+
+        async function verifyAssignment(id, btn) {
+            btn.textContent = 'Verifying...'; btn.disabled = true;
+            try {
+                const res = await apiFetch(`/domain-assignments/${id}/verify`, { method: 'POST' });
+                if (!res.ok) {
+                    const e = await res.json();
+                    showError('Verify failed: ' + (e.message || JSON.stringify(e)));
+                    return;
+                }
+                const data = await res.json();
+                if (data.status === 'VERIFIED') showSuccess('DNS record verified');
+                else showError('DNS record not found — verification failed');
+                loadAssignments(assignPage);
+            } catch (e) { showError('Verify error: ' + e.message); }
+            finally { btn.textContent = 'Verify'; btn.disabled = false; }
+        }
+
+        async function releaseAssignment(id, hostname) {
+            if (!confirm(`Release "${hostname}"? The DNS record will be deleted.`)) return;
+            const res = await apiFetch(`/domain-assignments/${id}`, { method: 'DELETE' });
+            if (!res.ok && res.status !== 204) { const e = await res.json(); showError(e.message || 'Release failed'); return; }
+            loadAssignments(assignPage);
+            showSuccess('Subdomain released');
+        }
+
+        // ── Custom Record Modal ──
+        function showCustomAssignModal() {
+            document.getElementById('customHostname').value = '';
+            document.getElementById('customRecordType').value = 'A';
+            document.getElementById('customTarget').value = '';
+            hideAlert('customAssignAlert');
+            loadZoneOptions();
+            document.getElementById('customAssignModal').classList.add('show');
+        }
+        function closeCustomAssignModal() { document.getElementById('customAssignModal').classList.remove('show'); }
+
+        function loadZoneOptions() {
+            const sel = document.getElementById('customZone');
+            sel.innerHTML = '<option value="">Select a domain...</option>' +
+                zonesCache.filter(z => z.active).map(z => `<option value="${z.id}">${esc(z.zoneName)}</option>`).join('');
+        }
+
+        document.getElementById('customAssignForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlert('customAssignAlert');
+            const body = {
+                zoneId: document.getElementById('customZone').value,
+                hostname: document.getElementById('customHostname').value.trim(),
+                recordType: document.getElementById('customRecordType').value,
+                targetValue: document.getElementById('customTarget').value.trim()
+            };
+            if (!body.zoneId) { showError('Select a domain', 'customAssignAlert'); return; }
+            const res = await apiFetch('/domain-assignments/custom', { method: 'POST', body: JSON.stringify(body) });
+            if (!res.ok) { const err = await res.json(); showError('(' + res.status + ') ' + (err.message || JSON.stringify(err)), 'customAssignAlert'); return; }
+            closeCustomAssignModal();
+            loadAssignments(assignPage);
+            showSuccess('Custom record created');
+        });
+
+        // ── Shared pagination renderer ──
+        function renderPagination(data, elId, fnName, label) {
+            const el = document.getElementById(elId);
+            if (data.totalPages <= 1) { el.innerHTML = `<span>${data.totalElements} ${label}</span>`; return; }
+            el.innerHTML = `
+                <button class="btn btn-ghost btn-sm" ${data.first ? 'disabled' : ''} onclick="${fnName}(${data.number - 1})">Prev</button>
+                <span>Page ${data.number + 1} of ${data.totalPages} (${data.totalElements} ${label})</span>
+                <button class="btn btn-ghost btn-sm" ${data.last ? 'disabled' : ''} onclick="${fnName}(${data.number + 1})">Next</button>
+            `;
+        }
+
+        // ── Initial load ──
+        loadAccounts().then(() => loadAssignments());
+    </script>
+</body>
+</html>

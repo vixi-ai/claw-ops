@@ -1,0 +1,100 @@
+package com.openclaw.manager.openclawserversmanager.terminal.service;
+
+import com.openclaw.manager.openclawserversmanager.terminal.config.TerminalConfig;
+import com.openclaw.manager.openclawserversmanager.terminal.model.SessionTokenInfo;
+import com.openclaw.manager.openclawserversmanager.terminal.model.TerminalSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class TerminalSessionService {
+
+    private static final Logger log = LoggerFactory.getLogger(TerminalSessionService.class);
+
+    private final TerminalConfig terminalConfig;
+    private final ConcurrentHashMap<String, SessionTokenInfo> pendingTokens = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, TerminalSession> activeSessions = new ConcurrentHashMap<>();
+
+    public TerminalSessionService(TerminalConfig terminalConfig) {
+        this.terminalConfig = terminalConfig;
+    }
+
+    public String generateSessionToken(UUID serverId, UUID userId) {
+        String token = UUID.randomUUID().toString();
+        Instant expiresAt = Instant.now().plusSeconds(terminalConfig.getTokenExpirySeconds());
+        pendingTokens.put(token, new SessionTokenInfo(token, userId, serverId, expiresAt));
+        return token;
+    }
+
+    public SessionTokenInfo validateAndConsumeToken(String token) {
+        SessionTokenInfo info = pendingTokens.remove(token);
+        if (info == null || info.isExpired()) {
+            return null;
+        }
+        return info;
+    }
+
+    public boolean canOpenSession(UUID userId) {
+        long count = activeSessions.values().stream()
+                .filter(s -> s.getUserId().equals(userId))
+                .count();
+        return count < terminalConfig.getMaxSessionsPerUser();
+    }
+
+    public void registerSession(String sessionId, TerminalSession session) {
+        activeSessions.put(sessionId, session);
+        log.info("Terminal session registered: {} (user: {}, server: {})",
+                sessionId, session.getUserId(), session.getServerId());
+    }
+
+    public TerminalSession removeSession(String sessionId) {
+        TerminalSession session = activeSessions.remove(sessionId);
+        if (session != null) {
+            log.info("Terminal session removed: {}", sessionId);
+        }
+        return session;
+    }
+
+    public int getActiveSessionCount(UUID userId) {
+        return (int) activeSessions.values().stream()
+                .filter(s -> s.getUserId().equals(userId))
+                .count();
+    }
+
+    @Scheduled(fixedRate = 60000)
+    public void cleanupExpiredTokensAndSessions() {
+        // Clean expired tokens
+        pendingTokens.entrySet().removeIf(entry -> entry.getValue().isExpired());
+
+        // Close inactive sessions
+        Instant cutoff = Instant.now().minus(terminalConfig.getSessionTimeoutMinutes(), ChronoUnit.MINUTES);
+        List<String> toRemove = new ArrayList<>();
+        for (Map.Entry<String, TerminalSession> entry : activeSessions.entrySet()) {
+            TerminalSession session = entry.getValue();
+            if (session.getLastActivityAt().isBefore(cutoff) || !session.getSshSession().isConnected()) {
+                toRemove.add(entry.getKey());
+            }
+        }
+        for (String sessionId : toRemove) {
+            TerminalSession session = activeSessions.remove(sessionId);
+            if (session != null) {
+                try {
+                    session.getSshSession().close();
+                } catch (Exception e) {
+                    log.debug("Error closing expired session {}: {}", sessionId, e.getMessage());
+                }
+                log.info("Cleaned up inactive terminal session: {}", sessionId);
+            }
+        }
+    }
+}

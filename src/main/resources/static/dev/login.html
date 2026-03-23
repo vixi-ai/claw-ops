@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-box">
+            <h1><span style="color: var(--primary)">OpenClaw</span> Control Plane</h1>
+            <p>Sign in to manage your infrastructure</p>
+            <div id="alert" class="alert"></div>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" required autofocus placeholder="admin@openclaw.dev">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required placeholder="Enter password">
+                </div>
+                <button type="submit" class="btn btn-primary mt-8">Sign In</button>
+            </form>
+        </div>
+    </div>
+    <script src="common.js"></script>
+    <script>
+        if (getToken()) window.location.href = '/dev/index.html';
+
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlert();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            try {
+                await login(email, password);
+                window.location.href = '/dev/index.html';
+            } catch (err) {
+                showError(err.message);
+            }
+        });
+    </script>
+</body>
+</html>

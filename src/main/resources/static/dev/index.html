@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <p class="text-muted mb-16">Development admin panel. Select a module to manage.</p>
+
+        <div class="grid grid-3">
+            <a href="users.html" class="module-card">
+                <h3>Users</h3>
+                <p>Manage DevOps users, roles, and passwords</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="servers.html" class="module-card">
+                <h3>Servers</h3>
+                <p>Server inventory and connection registry</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="secrets.html" class="module-card">
+                <h3>Secrets</h3>
+                <p>Encrypted credential storage</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="ssh.html" class="module-card">
+                <h3>SSH & Terminal</h3>
+                <p>SSH commands, SFTP, and interactive terminal</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="deployment.html" class="module-card">
+                <h3>Deployments</h3>
+                <p>Script library & deployment jobs</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="templates.html" class="module-card">
+                <h3>Templates</h3>
+                <p>Agent template provisioning</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="domains.html" class="module-card">
+                <h3>Domains</h3>
+                <p>DNS provider accounts, zones, and domain assignments</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+            <a href="audit.html" class="module-card">
+                <h3>Audit Log</h3>
+                <p>Operation audit logging</p>
+                <span class="badge badge-active">Active</span>
+            </a>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Dashboard');
+    </script>
+</body>
+</html>

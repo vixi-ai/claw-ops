@@ -1,0 +1,2 @@
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  com.openclaw.manager.openclawserversmanager.common.config.DotenvEnvironmentPostProcessor

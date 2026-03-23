@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /e/Reputeo/openclaw-servers-manager -type f -name *.md -o -name .gitignore -o -name .gitattributes)",
+      "Bash(find e:Reputeoopenclaw-servers-manager.claude -type f -name *.md -o -name *.txt -o -name *.json)",
+      "Bash(mkdir -p \"e:/Reputeo/openclaw-servers-manager/.claude/architecture\")",
+      "Bash(mkdir -p \"e:/Reputeo/openclaw-servers-manager/.claude/backlog\")",
+      "Bash(./mvnw compile:*)",
+      "Bash(find e:Reputeoopenclaw-servers-managersrcmainjava -type f -name *Service.java)",
+      "Bash(find e:/Reputeo/openclaw-servers-manager/.claude -type f -name *.md)",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"admin@openclaw.dev\"\",\"\"password\"\":\"\"changeme\"\"}')",
+      "Bash(PGPASSWORD=changeme psql -h localhost -p 5432 -U openclaw -d openclaw -c \"SELECT id, email, username, role, enabled FROM users;\")",
+      "Bash(curl -s http://localhost:8080/api/v1/audit/logs)",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/auth/login -H \"Content-Type: application/json\" -d \"{\"\"email\"\":\"\"admin@openclaw.dev\"\",\"\"password\"\":\"\"changeme\"\"}\")",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjNDIzODZlOS1jYjY1LTQ5OTAtOTgxZC01N2ZjNWY0YWU5ODAiLCJyb2xlIjoiQURNSU4iLCJlbWFpbCI6ImFkbWluQG9wZW5jbGF3LmRldiIsImlhdCI6MTc3MzIzNTgzMiwiZXhwIjoxNzczMjM2NzMyfQ._w0DrVKcWZ8PZbE6QG-KsNrv5QwRSdBPJevziJYz_s0\")",
+      "Bash(curl -s -w \"\\\\nHTTP:%{http_code}\" \"http://localhost:8080/api/v1/audit/logs?page=0&size=25&sort=createdAt,desc\" -H \"Authorization: Bearer $TOKEN\")",
+      "Bash(openssl rand:*)",
+      "Bash(python3 -c \"import base64,os; print\\(base64.b64encode\\(os.urandom\\(32\\)\\).decode\\(\\)\\)\")",
+      "Read(//c/Users/Vule/.m2/repository/com/hierynomus/sshj/**)",
+      "Bash(xargs -I{} jar tf \"{}\")",
+      "Bash(mvn compile:*)",
+      "Bash(./mvnw clean:*)",
+      "WebSearch",
+      "WebFetch(domain:www.namecheap.com)",
+      "WebFetch(domain:go-acme.github.io)",
+      "WebFetch(domain:blog.dotnetframework.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(find /e/Reputeo/openclaw-servers-manager -type f -name *ssl* -o -name *SSL*)",
+      "Bash(ls -la /e/Reputeo/openclaw-servers-manager/src/main/java/com/openclaw/manager/openclawserversmanager/domains/**/)",
+      "Bash(find /e/Reputeo/openclaw-servers-manager -name *Deployment* -o -name *Template*)",
+      "Bash(find /e/Reputeo/openclaw-servers-manager/src/main/resources/db/migration -type f -name *.sql)",
+      "Bash(find /e/Reputeo/openclaw-servers-manager/src/main/java/com/openclaw/manager/openclawserversmanager/deployment -type f -name *.java)",
+      "Bash(find /e/Reputeo/openclaw-servers-manager -name *ExceptionHandler* -type f)"
+    ],
+    "additionalDirectories": [
+      "e:\\Reputeo\\openclaw-servers-manager\\.claude",
+      "e:\\Reputeo\\openclaw-servers-manager\\.claude\\backlog",
+      "e:\\Reputeo\\openclaw-servers-manager\\src\\main\\java\\com\\openclaw\\manager\\openclawserversmanager\\common",
+      "e:\\Reputeo\\openclaw-servers-manager\\.claude\\architecture"
+    ]
+  }
+}

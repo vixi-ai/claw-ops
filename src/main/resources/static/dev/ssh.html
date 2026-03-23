@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Terminal - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+    <style>
+        .ssh-layout { display: grid; grid-template-columns: 260px 1fr; gap: 0; height: calc(100vh - 80px); }
+        @media (max-width: 768px) { .ssh-layout { grid-template-columns: 1fr; height: auto; } }
+
+        /* Sidebar */
+        .sidebar {
+            background: var(--surface); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .sidebar-header {
+            padding: 14px 16px; border-bottom: 1px solid var(--border);
+            font-size: 13px; font-weight: 600; color: var(--text);
+        }
+        .server-list { flex: 1; overflow-y: auto; }
+        .server-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 16px; border-bottom: 1px solid var(--border);
+            cursor: pointer; transition: background 0.1s;
+        }
+        .server-item:hover { background: var(--surface-hover); }
+        .server-item.selected { background: var(--surface-hover); border-left: 3px solid var(--primary); padding-left: 13px; }
+        .server-item-info { min-width: 0; }
+        .server-item-name { font-size: 13px; font-weight: 500; }
+        .server-item-host { font-size: 11px; color: var(--text-muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .server-item-status { font-size: 10px; padding: 2px 6px; border-radius: 8px; flex-shrink: 0; }
+
+        /* Main area */
+        .term-main { display: flex; flex-direction: column; overflow: hidden; }
+
+        /* Top bar */
+        .term-topbar {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 16px; border-bottom: 1px solid var(--border);
+            background: var(--surface); min-height: 44px;
+        }
+        .term-topbar-server { font-size: 13px; font-weight: 600; }
+        .term-topbar-host { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+        .terminal-status {
+            font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .terminal-status.disconnected { background: #374151; color: #9ca3af; }
+        .terminal-status.connecting { background: #fef3c7; color: #92400e; }
+        .terminal-status.connected { background: #d1fae5; color: #065f46; }
+
+        /* Terminal display */
+        .term-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #0d1117; }
+        #terminalDisplay {
+            flex: 1; overflow-y: auto; padding: 12px 16px;
+            font-family: 'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
+            font-size: 13px; line-height: 1.5; color: #c9d1d9;
+            white-space: pre-wrap; word-break: break-all;
+            outline: none; cursor: text;
+            -webkit-user-select: text; user-select: text;
+        }
+        #terminalDisplay::selection { background: #264f78; color: #fff; }
+        #terminalDisplay::-moz-selection { background: #264f78; color: #fff; }
+
+        /* Placeholder state */
+        .term-placeholder {
+            flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: #484f58; font-size: 14px; gap: 8px; background: #0d1117;
+        }
+        .term-placeholder-icon { font-size: 48px; opacity: 0.3; }
+
+        /* Bottom bar */
+        .term-bottombar {
+            display: flex; align-items: center; gap: 12px;
+            padding: 6px 16px; border-top: 1px solid #21262d;
+            background: #161b22; font-size: 11px; color: #484f58;
+        }
+        .term-bottombar kbd {
+            background: #21262d; border: 1px solid #30363d; border-radius: 3px;
+            padding: 1px 4px; font-family: inherit; font-size: 10px; color: #8b949e;
+        }
+    </style>
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+
+    <div class="ssh-layout">
+        <!-- Sidebar: Server list -->
+        <div class="sidebar">
+            <div class="sidebar-header">Servers</div>
+            <div id="serverList" class="server-list">
+                <div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Main: Terminal -->
+        <div class="term-main">
+            <div class="term-topbar">
+                <span id="termServerName" class="term-topbar-server" style="color: var(--text-muted);">No server selected</span>
+                <span id="termServerHost" class="term-topbar-host"></span>
+                <span style="flex:1;"></span>
+                <span id="termStatus" class="terminal-status disconnected">Disconnected</span>
+                <button class="btn btn-primary btn-sm" id="termConnectBtn" onclick="termConnect()" disabled>Connect</button>
+                <button class="btn btn-ghost btn-sm" id="termDisconnectBtn" onclick="termDisconnect()" style="display:none;">Disconnect</button>
+            </div>
+
+            <div class="term-wrapper">
+                <div id="termPlaceholder" class="term-placeholder">
+                    <div class="term-placeholder-icon">></div>
+                    <div>Select a server and click Connect</div>
+                </div>
+                <div id="terminalDisplay" tabindex="0" style="display:none;"></div>
+            </div>
+
+            <div class="term-bottombar">
+                <span>Select text + <kbd>Ctrl+C</kbd> to copy</span>
+                <span>|</span>
+                <span>Right-click to paste</span>
+                <span>|</span>
+                <span><kbd>Ctrl+C</kbd> (no selection) sends SIGINT</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('SSH Terminal');
+
+        let selectedServerId = null;
+        let selectedServer = null;
+        let servers = [];
+
+        // ── ANSI Parser ────────────────────────────────
+        const ANSI_COLORS = {
+            30: '#484f58', 31: '#ff7b72', 32: '#7ee787', 33: '#d29922',
+            34: '#79c0ff', 35: '#d2a8ff', 36: '#a5d6ff', 37: '#c9d1d9',
+            90: '#6e7681', 91: '#ffa198', 92: '#56d364', 93: '#e3b341',
+            94: '#79c0ff', 95: '#d2a8ff', 96: '#a5d6ff', 97: '#f0f6fc'
+        };
+        const ANSI_BG_COLORS = {
+            40: '#484f58', 41: '#ff7b72', 42: '#7ee787', 43: '#d29922',
+            44: '#79c0ff', 45: '#d2a8ff', 46: '#a5d6ff', 47: '#c9d1d9',
+            100: '#6e7681', 101: '#ffa198', 102: '#56d364', 103: '#e3b341',
+            104: '#79c0ff', 105: '#d2a8ff', 106: '#a5d6ff', 107: '#f0f6fc'
+        };
+
+        function ansiToHtml(text) {
+            // Strip OSC sequences (title setting, etc): ESC ] ... BEL/ST
+            text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+            // Strip private mode sequences: ESC [ ? number h/l
+            text = text.replace(/\x1b\[\?[0-9;]*[hl]/g, '');
+            // Strip cursor movement/erase sequences we don't handle
+            text = text.replace(/\x1b\[[0-9;]*[ABCDJKHG]/g, '');
+            // Strip erase in line/display
+            text = text.replace(/\x1b\[[0-9;]*[mK]/g, function(match) {
+                // Keep SGR (m) sequences, strip K sequences
+                if (match.endsWith('K')) return '';
+                return match;
+            });
+
+            let result = '';
+            let bold = false, dim = false, italic = false, underline = false;
+            let fg = null, bg = null;
+            let i = 0;
+            let spanOpen = false;
+
+            function openSpan() {
+                let styles = [];
+                if (bold) styles.push('font-weight:bold');
+                if (dim) styles.push('opacity:0.6');
+                if (italic) styles.push('font-style:italic');
+                if (underline) styles.push('text-decoration:underline');
+                if (fg) styles.push('color:' + fg);
+                if (bg) styles.push('background:' + bg);
+                if (styles.length) {
+                    result += '<span style="' + styles.join(';') + '">';
+                    spanOpen = true;
+                }
+            }
+
+            function closeSpan() {
+                if (spanOpen) { result += '</span>'; spanOpen = false; }
+            }
+
+            while (i < text.length) {
+                // ESC [ ... m (SGR sequence)
+                if (text[i] === '\x1b' && text[i + 1] === '[') {
+                    let j = i + 2;
+                    while (j < text.length && text[j] !== 'm' && j - i < 20) j++;
+                    if (j < text.length && text[j] === 'm') {
+                        closeSpan();
+                        const params = text.substring(i + 2, j).split(';').map(Number);
+                        for (let p = 0; p < params.length; p++) {
+                            const code = params[p] || 0;
+                            if (code === 0) { bold = dim = italic = underline = false; fg = bg = null; }
+                            else if (code === 1) bold = true;
+                            else if (code === 2) dim = true;
+                            else if (code === 3) italic = true;
+                            else if (code === 4) underline = true;
+                            else if (code === 22) { bold = false; dim = false; }
+                            else if (code === 23) italic = false;
+                            else if (code === 24) underline = false;
+                            else if (code === 39) fg = null;
+                            else if (code === 49) bg = null;
+                            else if (ANSI_COLORS[code]) fg = ANSI_COLORS[code];
+                            else if (ANSI_BG_COLORS[code]) bg = ANSI_BG_COLORS[code];
+                            else if (code === 38 && params[p + 1] === 5) { p += 2; /* skip 256-color */ }
+                            else if (code === 48 && params[p + 1] === 5) { p += 2; }
+                        }
+                        openSpan();
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                // Skip any remaining ESC sequences we missed
+                if (text[i] === '\x1b') {
+                    i++;
+                    continue;
+                }
+                // Carriage return: skip (newlines handle line breaks)
+                if (text[i] === '\r') {
+                    i++;
+                    continue;
+                }
+                // HTML-escape printable characters
+                if (text[i] === '<') result += '&lt;';
+                else if (text[i] === '>') result += '&gt;';
+                else if (text[i] === '&') result += '&amp;';
+                else result += text[i];
+                i++;
+            }
+            closeSpan();
+            return result;
+        }
+
+        // ── Server loading ─────────────────────────────
+        async function loadServers() {
+            const res = await apiFetch('/servers?page=0&size=100&sort=name,asc');
+            if (!res.ok) { showError('Failed to load servers'); return; }
+            const data = await res.json();
+            servers = data.content;
+            renderServerList();
+        }
+
+        function renderServerList() {
+            const el = document.getElementById('serverList');
+            if (!servers.length) {
+                el.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">No servers registered</div>';
+                return;
+            }
+            el.innerHTML = servers.map(s => {
+                const statusClass = s.status === 'ONLINE' ? 'badge-active' : s.status === 'OFFLINE' ? 'badge-error' : 'badge-soon';
+                return `<div class="server-item ${s.id === selectedServerId ? 'selected' : ''}" onclick="selectServer('${s.id}')">
+                    <div class="server-item-info">
+                        <div class="server-item-name">${esc(s.name)}</div>
+                        <div class="server-item-host">${esc(s.hostname || s.ipAddress)}</div>
+                    </div>
+                    <span class="server-item-status badge ${statusClass}">${s.status}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function selectServer(id) {
+            if (termConnected && selectedServerId !== id) {
+                termDisconnect();
+            }
+            selectedServerId = id;
+            selectedServer = servers.find(x => x.id === id);
+            renderServerList();
+
+            document.getElementById('termServerName').textContent = selectedServer ? selectedServer.name : 'No server selected';
+            document.getElementById('termServerName').style.color = '';
+            document.getElementById('termServerHost').textContent = selectedServer ? (selectedServer.hostname || selectedServer.ipAddress) : '';
+            document.getElementById('termConnectBtn').disabled = false;
+        }
+
+        // ── Terminal ───────────────────────────────────
+        let ws = null;
+        let termConnected = false;
+
+        function setTermStatus(status) {
+            const el = document.getElementById('termStatus');
+            el.className = 'terminal-status ' + status;
+            const labels = { disconnected: 'Disconnected', connecting: 'Connecting...', connected: 'Connected' };
+            el.textContent = labels[status] || status;
+        }
+
+        function termWrite(html) {
+            const termEl = document.getElementById('terminalDisplay');
+            termEl.innerHTML += html;
+            termEl.scrollTop = termEl.scrollHeight;
+        }
+
+        async function termConnect() {
+            if (!selectedServerId) { showError('Select a server first'); return; }
+            if (termConnected) return;
+
+            setTermStatus('connecting');
+            document.getElementById('termConnectBtn').disabled = true;
+
+            const termEl = document.getElementById('terminalDisplay');
+            const placeholder = document.getElementById('termPlaceholder');
+            placeholder.style.display = 'none';
+            termEl.style.display = '';
+            termEl.innerHTML = '';
+            termEl.focus();
+
+            try {
+                const res = await apiFetch(`/servers/${selectedServerId}/ssh/session-token`);
+                if (!res.ok) {
+                    const err = await res.json();
+                    showError(err.message || 'Failed to get session token');
+                    setTermStatus('disconnected');
+                    document.getElementById('termConnectBtn').disabled = false;
+                    return;
+                }
+                const { token } = await res.json();
+
+                const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${location.host}/ws/terminal?token=${token}&cols=120&rows=40`;
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    termConnected = true;
+                    setTermStatus('connected');
+                    document.getElementById('termConnectBtn').style.display = 'none';
+                    document.getElementById('termDisconnectBtn').style.display = '';
+                    termEl.focus();
+                };
+
+                ws.onmessage = (event) => {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'OUTPUT') {
+                        termWrite(ansiToHtml(msg.data));
+                    } else if (msg.type === 'ERROR') {
+                        termWrite('<span style="color:#ff7b72">[ERROR] ' + esc(msg.data) + '</span>\n');
+                    } else if (msg.type === 'CLOSED') {
+                        termWrite('<span style="color:#6e7681">\n--- Session ended ---\n</span>');
+                        termCleanup();
+                    }
+                };
+
+                ws.onclose = () => {
+                    if (termConnected) {
+                        termWrite('<span style="color:#6e7681">\n--- Connection closed ---\n</span>');
+                    }
+                    termCleanup();
+                };
+
+                ws.onerror = () => {
+                    termWrite('<span style="color:#ff7b72">\n--- Connection error ---\n</span>');
+                    termCleanup();
+                };
+
+            } catch (err) {
+                showError(err.message);
+                setTermStatus('disconnected');
+                document.getElementById('termConnectBtn').disabled = false;
+            }
+        }
+
+        function termDisconnect() {
+            if (ws) ws.close();
+            termCleanup();
+        }
+
+        function termCleanup() {
+            termConnected = false;
+            ws = null;
+            setTermStatus('disconnected');
+            document.getElementById('termConnectBtn').style.display = '';
+            document.getElementById('termConnectBtn').disabled = !selectedServerId;
+            document.getElementById('termDisconnectBtn').style.display = 'none';
+        }
+
+        // ── Keyboard: Ctrl+C copies if selection, else sends SIGINT ──
+        document.getElementById('terminalDisplay').addEventListener('keydown', (e) => {
+            if (!termConnected || !ws) return;
+
+            // Ctrl+C: copy if text selected, otherwise send SIGINT
+            if (e.ctrlKey && e.key === 'c') {
+                const selection = window.getSelection().toString();
+                if (selection) {
+                    document.execCommand('copy');
+                    window.getSelection().removeAllRanges();
+                    return;
+                }
+                e.preventDefault();
+                ws.send(JSON.stringify({ type: 'INPUT', data: '\x03' }));
+                return;
+            }
+
+            // Ctrl+V: let browser handle paste (handled by paste event)
+            if (e.ctrlKey && e.key === 'v') return;
+
+            e.preventDefault();
+
+            let data = '';
+            if (e.ctrlKey && e.key === 'd') { data = '\x04'; }
+            else if (e.ctrlKey && e.key === 'l') { data = '\x0c'; }
+            else if (e.ctrlKey && e.key === 'z') { data = '\x1a'; }
+            else if (e.ctrlKey && e.key === 'a') { data = '\x01'; }
+            else if (e.ctrlKey && e.key === 'e') { data = '\x05'; }
+            else if (e.ctrlKey && e.key === 'u') { data = '\x15'; }
+            else if (e.ctrlKey && e.key === 'k') { data = '\x0b'; }
+            else if (e.ctrlKey && e.key === 'w') { data = '\x17'; }
+            else if (e.key === 'Enter') { data = '\r'; }
+            else if (e.key === 'Backspace') { data = '\x7f'; }
+            else if (e.key === 'Tab') { data = '\t'; }
+            else if (e.key === 'Escape') { data = '\x1b'; }
+            else if (e.key === 'ArrowUp') { data = '\x1b[A'; }
+            else if (e.key === 'ArrowDown') { data = '\x1b[B'; }
+            else if (e.key === 'ArrowRight') { data = '\x1b[C'; }
+            else if (e.key === 'ArrowLeft') { data = '\x1b[D'; }
+            else if (e.key === 'Home') { data = '\x1b[H'; }
+            else if (e.key === 'End') { data = '\x1b[F'; }
+            else if (e.key === 'Delete') { data = '\x1b[3~'; }
+            else if (e.key === 'PageUp') { data = '\x1b[5~'; }
+            else if (e.key === 'PageDown') { data = '\x1b[6~'; }
+            else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) { data = e.key; }
+
+            if (data) {
+                ws.send(JSON.stringify({ type: 'INPUT', data: data }));
+            }
+        });
+
+        // Paste via Ctrl+V
+        document.getElementById('terminalDisplay').addEventListener('paste', (e) => {
+            if (!termConnected || !ws) return;
+            e.preventDefault();
+            const text = e.clipboardData.getData('text');
+            if (text) {
+                ws.send(JSON.stringify({ type: 'INPUT', data: text }));
+            }
+        });
+
+        // Right-click paste
+        document.getElementById('terminalDisplay').addEventListener('contextmenu', (e) => {
+            if (!termConnected || !ws) return;
+            e.preventDefault();
+            navigator.clipboard.readText().then(text => {
+                if (text) {
+                    ws.send(JSON.stringify({ type: 'INPUT', data: text }));
+                }
+            }).catch(() => {});
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (ws) ws.close();
+        });
+
+        // ── Utils ──────────────────────────────────────
+        function esc(str) {
+            if (!str) return '';
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        loadServers();
+    </script>
+</body>
+</html>

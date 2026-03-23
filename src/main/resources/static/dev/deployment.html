@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deployments - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+    <style>
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .section-header h2 { margin: 0; }
+        .section { margin-bottom: 32px; }
+        .modal-overlay .modal { max-width: 600px; }
+        .field-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; }
+        .field-label .req { color: var(--danger); opacity: 0.7; }
+        .field-label .opt { font-weight: 400; opacity: 0.5; margin-left: 4px; }
+        .badge-PENDING { background: #fef3c7; color: #92400e; }
+        .badge-RUNNING { background: #dbeafe; color: #1e40af; }
+        .badge-COMPLETED { background: #d1fae5; color: #065f46; }
+        .badge-FAILED { background: #fee2e2; color: #991b1b; }
+        .badge-CANCELLED { background: var(--surface-hover); color: var(--text-muted); }
+        .log-pre { background: #1a1a2e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+        .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+        .filter-bar select { font-size: 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
+    </style>
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <!-- SECTION 1: SCRIPT LIBRARY -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Script Library</h2>
+                <button class="btn btn-primary" onclick="showScriptModal()">+ New Script</button>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Created</th><th>Actions</th></tr></thead>
+                    <tbody id="scriptsTable"><tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- SECTION 2: JOB HISTORY -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Job History</h2>
+            </div>
+            <div class="filter-bar">
+                <select id="filterServer" onchange="loadJobs()"><option value="">All servers</option></select>
+                <select id="filterStatus" onchange="loadJobs()">
+                    <option value="">All statuses</option>
+                    <option value="PENDING">PENDING</option>
+                    <option value="RUNNING">RUNNING</option>
+                    <option value="COMPLETED">COMPLETED</option>
+                    <option value="FAILED">FAILED</option>
+                    <option value="CANCELLED">CANCELLED</option>
+                </select>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Script</th><th>Server</th><th>Status</th><th>Started</th><th>Duration</th><th>Actions</th></tr></thead>
+                    <tbody id="jobsTable"><tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script Modal -->
+    <div class="modal-overlay" id="scriptModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="scriptModalTitle">New Script</h3>            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editScriptId">
+                <div class="form-group">
+                    <label class="field-label">Name <span class="req">*</span></label>
+                    <input type="text" id="scriptName" class="form-control" maxlength="100">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Type <span class="req">*</span></label>
+                    <select id="scriptType" class="form-control">
+                        <option value="GENERAL">GENERAL</option>
+                        <option value="INSTALL">INSTALL</option>
+                        <option value="REMOVE">REMOVE</option>
+                        <option value="UPDATE">UPDATE</option>
+                        <option value="MAINTENANCE">MAINTENANCE</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Description <span class="opt">(optional)</span></label>
+                    <input type="text" id="scriptDescription" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Script Content <span class="req">*</span></label>
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <label class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0;">
+                            Upload .sh file
+                            <input type="file" accept=".sh,.bash,text/x-sh,text/plain" style="display:none" onchange="loadScriptFile(this)">
+                        </label>
+                        <span id="scriptFileName" style="font-size:12px;color:var(--text-muted);"></span>
+                    </div>
+                    <textarea id="scriptContent" class="form-control" rows="15" style="font-family:monospace;font-size:12px;"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal('scriptModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveScript()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Run Script Modal -->
+    <div class="modal-overlay" id="runModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Run Script</h3>            </div>
+            <div class="modal-body">
+                <input type="hidden" id="runScriptId">
+                <p id="runScriptName" style="margin-bottom:12px;"></p>
+                <div class="form-group">
+                    <label class="field-label">Target Server <span class="req">*</span></label>
+                    <select id="runServerSelect" class="form-control"></select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal('runModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="runScript()">Run</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- View Logs Modal -->
+    <div class="modal-overlay" id="logsModal">
+        <div class="modal" style="max-width:700px;">
+            <div class="modal-header">
+                <h3>Job Logs</h3>            </div>
+            <div class="modal-body">
+                <div style="margin-bottom:8px;">
+                    <span id="logsStatus" class="badge"></span>
+                    <span id="logsError" style="color:var(--danger);font-size:12px;margin-left:8px;"></span>
+                </div>
+                <pre class="log-pre" id="logsContent">Loading...</pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal('logsModal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Deployments');
+
+        let servers = [];
+        let autoRefreshTimer = null;
+
+        async function loadServers() {
+            try {
+                const res = await apiFetch('/servers?size=200');
+                if (res.ok) {
+                    const data = await res.json();
+                    servers = data.content || [];
+                    const sel1 = document.getElementById('filterServer');
+                    const sel2 = document.getElementById('runServerSelect');
+                    const opts = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+                    sel1.innerHTML = '<option value="">All servers</option>' + opts;
+                    sel2.innerHTML = opts;
+                }
+            } catch (e) { console.error('Failed to load servers', e); }
+        }
+
+        function serverName(id) {
+            const s = servers.find(s => s.id === id);
+            return s ? s.name : (id || '-');
+        }
+
+        // ─── Scripts ───
+        async function loadScripts() {
+            try {
+                const res = await apiFetch('/deployment-scripts?size=100&sort=createdAt,desc');
+                if (!res.ok) throw new Error('Failed to load scripts');
+                const data = await res.json();
+                const rows = (data.content || []);
+                if (rows.length === 0) {
+                    document.getElementById('scriptsTable').innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">No scripts yet</td></tr>';
+                    return;
+                }
+                document.getElementById('scriptsTable').innerHTML = rows.map(s => `
+                    <tr>
+                        <td><strong>${esc(s.name)}</strong></td>
+                        <td><span class="badge">${s.scriptType}</span></td>
+                        <td>${esc(s.description || '-')}</td>
+                        <td>${formatDate(s.createdAt)}</td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm" onclick="editScript('${s.id}')">Edit</button>
+                            <button class="btn btn-ghost btn-sm" onclick="showRunModal('${s.id}', '${esc(s.name)}')">Run</button>
+                            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteScript('${s.id}','${esc(s.name)}')">Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) { showError(e.message); }
+        }
+
+        function showScriptModal(script) {
+            document.getElementById('editScriptId').value = script ? script.id : '';
+            document.getElementById('scriptModalTitle').textContent = script ? 'Edit Script' : 'New Script';
+            document.getElementById('scriptName').value = script ? script.name : '';
+            document.getElementById('scriptType').value = script ? script.scriptType : 'GENERAL';
+            document.getElementById('scriptDescription').value = script ? (script.description || '') : '';
+            document.getElementById('scriptContent').value = script ? script.scriptContent : '#!/bin/bash\nset -e\n\n';
+            document.getElementById('scriptModal').classList.add('show');
+        }
+
+        async function editScript(id) {
+            const res = await apiFetch(`/deployment-scripts/${id}`);
+            if (res.ok) showScriptModal(await res.json());
+        }
+
+        async function saveScript() {
+            const id = document.getElementById('editScriptId').value;
+            const body = {
+                name: document.getElementById('scriptName').value,
+                scriptType: document.getElementById('scriptType').value,
+                description: document.getElementById('scriptDescription').value || null,
+                scriptContent: document.getElementById('scriptContent').value
+            };
+            try {
+                const res = id
+                    ? await apiFetch(`/deployment-scripts/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+                    : await apiFetch('/deployment-scripts', { method: 'POST', body: JSON.stringify(body) });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Save failed'); }
+                closeModal('scriptModal');
+                showSuccess(id ? 'Script updated' : 'Script created');
+                loadScripts();
+            } catch (e) { showError(e.message); }
+        }
+
+        async function deleteScript(id, name) {
+            if (!confirm(`Delete script "${name}"?`)) return;
+            try {
+                const res = await apiFetch(`/deployment-scripts/${id}`, { method: 'DELETE' });
+                if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+                showSuccess('Script deleted');
+                loadScripts();
+            } catch (e) { showError(e.message); }
+        }
+
+        // ─── Run ───
+        function showRunModal(scriptId, scriptName) {
+            document.getElementById('runScriptId').value = scriptId;
+            document.getElementById('runScriptName').textContent = `Run "${scriptName}" on:`;
+            document.getElementById('runModal').classList.add('show');
+        }
+
+        async function runScript() {
+            const scriptId = document.getElementById('runScriptId').value;
+            const serverId = document.getElementById('runServerSelect').value;
+            try {
+                const res = await apiFetch('/deployment-jobs', {
+                    method: 'POST',
+                    body: JSON.stringify({ scriptId, serverId })
+                });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Trigger failed'); }
+                const job = await res.json();
+                closeModal('runModal');
+                showSuccess(`Job triggered (${job.id.substring(0, 8)}...)`);
+                loadJobs();
+            } catch (e) { showError(e.message); }
+        }
+
+        // ─── Jobs ───
+        async function loadJobs() {
+            try {
+                let url = '/deployment-jobs?size=50&sort=createdAt,desc';
+                const serverId = document.getElementById('filterServer').value;
+                const status = document.getElementById('filterStatus').value;
+                if (serverId) url += `&serverId=${serverId}`;
+                if (status) url += `&status=${status}`;
+                const res = await apiFetch(url);
+                if (!res.ok) throw new Error('Failed to load jobs');
+                const data = await res.json();
+                const rows = data.content || [];
+                if (rows.length === 0) {
+                    document.getElementById('jobsTable').innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px;">No jobs yet</td></tr>';
+                    stopAutoRefresh();
+                    return;
+                }
+                document.getElementById('jobsTable').innerHTML = rows.map(j => `
+                    <tr>
+                        <td>${esc(j.scriptName || '-')}</td>
+                        <td>${esc(serverName(j.serverId))}</td>
+                        <td><span class="badge badge-${j.status}">${j.status}</span></td>
+                        <td>${formatDate(j.startedAt)}</td>
+                        <td>${duration(j)}</td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm" onclick="viewLogs('${j.id}')">Logs</button>
+                            ${j.status === 'PENDING' ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="cancelJob('${j.id}')">Cancel</button>` : ''}
+                        </td>
+                    </tr>
+                `).join('');
+
+                // Auto-refresh if any active jobs
+                const hasActive = rows.some(j => j.status === 'PENDING' || j.status === 'RUNNING');
+                if (hasActive) startAutoRefresh(); else stopAutoRefresh();
+            } catch (e) { showError(e.message); }
+        }
+
+        function duration(job) {
+            if (!job.startedAt) return '-';
+            const end = job.finishedAt ? new Date(job.finishedAt) : new Date();
+            const ms = end - new Date(job.startedAt);
+            if (ms < 1000) return ms + 'ms';
+            return Math.round(ms / 1000) + 's';
+        }
+
+        async function viewLogs(id) {
+            document.getElementById('logsContent').textContent = 'Loading...';
+            document.getElementById('logsStatus').textContent = '';
+            document.getElementById('logsError').textContent = '';
+            document.getElementById('logsModal').classList.add('show');
+            try {
+                const res = await apiFetch(`/deployment-jobs/${id}`);
+                if (!res.ok) throw new Error('Failed to load job');
+                const job = await res.json();
+                document.getElementById('logsStatus').textContent = job.status;
+                document.getElementById('logsStatus').className = `badge badge-${job.status}`;
+                document.getElementById('logsError').textContent = job.errorMessage || '';
+                document.getElementById('logsContent').textContent = job.logs || '(no output)';
+            } catch (e) { document.getElementById('logsContent').textContent = 'Error: ' + e.message; }
+        }
+
+        async function cancelJob(id) {
+            try {
+                const res = await apiFetch(`/deployment-jobs/${id}/cancel`, { method: 'POST' });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Cancel failed'); }
+                showSuccess('Job cancelled');
+                loadJobs();
+            } catch (e) { showError(e.message); }
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshTimer) return;
+            autoRefreshTimer = setInterval(loadJobs, 5000);
+        }
+        function stopAutoRefresh() {
+            if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+        }
+
+        function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+        function loadScriptFile(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                document.getElementById('scriptContent').value = e.target.result;
+                document.getElementById('scriptFileName').textContent = file.name;
+            };
+            reader.readAsText(file);
+            input.value = '';
+        }
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        // Init
+        loadServers();
+        loadScripts();
+        loadJobs();
+    </script>
+</body>
+</html>

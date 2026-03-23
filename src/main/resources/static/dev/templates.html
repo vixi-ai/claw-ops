@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Templates - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+    <style>
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .section-header h2 { margin: 0; }
+        .section { margin-bottom: 32px; }
+        .modal-overlay .modal { max-width: 600px; }
+        .field-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; }
+        .field-label .req { color: var(--danger); opacity: 0.7; }
+        .field-label .opt { font-weight: 400; opacity: 0.5; margin-left: 4px; }
+        .badge-PENDING { background: #fef3c7; color: #92400e; }
+        .badge-RUNNING { background: #dbeafe; color: #1e40af; }
+        .badge-COMPLETED { background: #d1fae5; color: #065f46; }
+        .badge-FAILED { background: #fee2e2; color: #991b1b; }
+        .badge-CANCELLED { background: var(--surface-hover); color: var(--text-muted); }
+        .log-pre { background: #1a1a2e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <!-- SECTION 1: AGENT TEMPLATES -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Agent Templates</h2>
+                <button class="btn btn-primary" onclick="showTemplateModal()">+ New Template</button>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Name</th><th>Agent Type</th><th>Description</th><th>Created</th><th>Actions</th></tr></thead>
+                    <tbody id="templatesTable"><tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- SECTION 2: RECENT TEMPLATE DEPLOYMENTS -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Recent Template Deployments</h2>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Template</th><th>Server</th><th>Status</th><th>Deployed At</th><th>Actions</th></tr></thead>
+                    <tbody id="deploymentsTable"><tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Template Modal -->
+    <div class="modal-overlay" id="templateModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="templateModalTitle">New Template</h3>            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editTemplateId">
+                <div class="form-group">
+                    <label class="field-label">Name <span class="req">*</span></label>
+                    <input type="text" id="templateName" class="form-control" maxlength="100">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Agent Type <span class="req">*</span> <span class="opt">(lowercase, hyphens only)</span></label>
+                    <input type="text" id="templateAgentType" class="form-control" placeholder="e.g. web-scraper">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Description <span class="opt">(optional)</span></label>
+                    <input type="text" id="templateDescription" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Install Script <span class="req">*</span></label>
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <label class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0;">
+                            Upload .sh file
+                            <input type="file" accept=".sh,.bash,text/x-sh,text/plain" style="display:none" onchange="loadTemplateFile(this)">
+                        </label>
+                        <span id="templateFileName" style="font-size:12px;color:var(--text-muted);"></span>
+                    </div>
+                    <textarea id="templateInstallScript" class="form-control" rows="15" style="font-family:monospace;font-size:12px;"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal('templateModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveTemplate()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Deploy Modal -->
+    <div class="modal-overlay" id="deployModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Deploy Template</h3>            </div>
+            <div class="modal-body">
+                <input type="hidden" id="deployTemplateId">
+                <p id="deployTemplateName" style="margin-bottom:12px;"></p>
+                <div class="form-group">
+                    <label class="field-label">Target Server <span class="req">*</span></label>
+                    <select id="deployServerSelect" class="form-control"></select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal('deployModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="deployTemplate()">Deploy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- View Logs Modal -->
+    <div class="modal-overlay" id="logsModal">
+        <div class="modal" style="max-width:700px;">
+            <div class="modal-header">
+                <h3>Job Logs</h3>            </div>
+            <div class="modal-body">
+                <div style="margin-bottom:8px;">
+                    <span id="logsStatus" class="badge"></span>
+                    <span id="logsError" style="color:var(--danger);font-size:12px;margin-left:8px;"></span>
+                </div>
+                <pre class="log-pre" id="logsContent">Loading...</pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal('logsModal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Templates');
+
+        let servers = [];
+
+        async function loadServers() {
+            try {
+                const res = await apiFetch('/servers?size=200');
+                if (res.ok) {
+                    const data = await res.json();
+                    servers = data.content || [];
+                    const sel = document.getElementById('deployServerSelect');
+                    sel.innerHTML = servers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+                }
+            } catch (e) { console.error('Failed to load servers', e); }
+        }
+
+        function serverName(id) {
+            const s = servers.find(s => s.id === id);
+            return s ? s.name : (id || '-');
+        }
+
+        // ─── Templates ───
+        async function loadTemplates() {
+            try {
+                const res = await apiFetch('/agent-templates?size=100&sort=createdAt,desc');
+                if (!res.ok) throw new Error('Failed to load templates');
+                const data = await res.json();
+                const rows = data.content || [];
+                if (rows.length === 0) {
+                    document.getElementById('templatesTable').innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">No templates yet</td></tr>';
+                    return;
+                }
+                document.getElementById('templatesTable').innerHTML = rows.map(t => `
+                    <tr>
+                        <td><strong>${esc(t.name)}</strong></td>
+                        <td><code>${esc(t.agentType)}</code></td>
+                        <td>${esc(t.description || '-')}</td>
+                        <td>${formatDate(t.createdAt)}</td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm" onclick="editTemplate('${t.id}')">Edit</button>
+                            <button class="btn btn-ghost btn-sm" onclick="showDeployModal('${t.id}', '${esc(t.name)}')">Deploy</button>
+                            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteTemplate('${t.id}','${esc(t.name)}')">Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) { showError(e.message); }
+        }
+
+        function showTemplateModal(tmpl) {
+            document.getElementById('editTemplateId').value = tmpl ? tmpl.id : '';
+            document.getElementById('templateModalTitle').textContent = tmpl ? 'Edit Template' : 'New Template';
+            document.getElementById('templateName').value = tmpl ? tmpl.name : '';
+            document.getElementById('templateAgentType').value = tmpl ? tmpl.agentType : '';
+            document.getElementById('templateDescription').value = tmpl ? (tmpl.description || '') : '';
+            document.getElementById('templateInstallScript').value = tmpl ? tmpl.installScript : '#!/bin/bash\nset -e\n\nAGENT_TYPE="my-agent"\nBASE_DIR="$HOME/openclaw/agents/$AGENT_TYPE"\n\nmkdir -p "$BASE_DIR/skills"\n\ncat > "$BASE_DIR/agent.md" << \'AGENT_EOF\'\n# Agent Configuration\nAGENT_EOF\n\necho "Agent $AGENT_TYPE installed at $BASE_DIR"\n';
+            document.getElementById('templateModal').classList.add('show');
+        }
+
+        async function editTemplate(id) {
+            const res = await apiFetch(`/agent-templates/${id}`);
+            if (res.ok) showTemplateModal(await res.json());
+        }
+
+        async function saveTemplate() {
+            const id = document.getElementById('editTemplateId').value;
+            const body = {
+                name: document.getElementById('templateName').value,
+                agentType: document.getElementById('templateAgentType').value,
+                description: document.getElementById('templateDescription').value || null,
+                installScript: document.getElementById('templateInstallScript').value
+            };
+            try {
+                const res = id
+                    ? await apiFetch(`/agent-templates/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+                    : await apiFetch('/agent-templates', { method: 'POST', body: JSON.stringify(body) });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Save failed'); }
+                closeModal('templateModal');
+                showSuccess(id ? 'Template updated' : 'Template created');
+                loadTemplates();
+            } catch (e) { showError(e.message); }
+        }
+
+        async function deleteTemplate(id, name) {
+            if (!confirm(`Delete template "${name}"?`)) return;
+            try {
+                const res = await apiFetch(`/agent-templates/${id}`, { method: 'DELETE' });
+                if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+                showSuccess('Template deleted');
+                loadTemplates();
+            } catch (e) { showError(e.message); }
+        }
+
+        // ─── Deploy ───
+        function showDeployModal(templateId, templateName) {
+            document.getElementById('deployTemplateId').value = templateId;
+            document.getElementById('deployTemplateName').textContent = `Deploy "${templateName}" to:`;
+            document.getElementById('deployModal').classList.add('show');
+        }
+
+        async function deployTemplate() {
+            const templateId = document.getElementById('deployTemplateId').value;
+            const serverId = document.getElementById('deployServerSelect').value;
+            try {
+                const res = await apiFetch(`/agent-templates/${templateId}/deploy`, {
+                    method: 'POST',
+                    body: JSON.stringify({ serverId })
+                });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Deploy failed'); }
+                const data = await res.json();
+                closeModal('deployModal');
+                showSuccess(`Deployed! Job ID: ${data.jobId.substring(0, 8)}...`);
+                loadDeployments();
+            } catch (e) { showError(e.message); }
+        }
+
+        // ─── Recent Deployments ───
+        async function loadDeployments() {
+            try {
+                const res = await apiFetch('/deployment-jobs?size=50&sort=createdAt,desc');
+                if (!res.ok) throw new Error('Failed to load jobs');
+                const data = await res.json();
+                const rows = (data.content || []).filter(j => j.scriptName && j.scriptName.startsWith('template:'));
+                if (rows.length === 0) {
+                    document.getElementById('deploymentsTable').innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">No template deployments yet</td></tr>';
+                    return;
+                }
+                document.getElementById('deploymentsTable').innerHTML = rows.map(j => `
+                    <tr>
+                        <td>${esc(j.scriptName.replace('template:', ''))}</td>
+                        <td>${esc(serverName(j.serverId))}</td>
+                        <td><span class="badge badge-${j.status}">${j.status}</span></td>
+                        <td>${formatDate(j.createdAt)}</td>
+                        <td><button class="btn btn-ghost btn-sm" onclick="viewLogs('${j.id}')">View Logs</button></td>
+                    </tr>
+                `).join('');
+            } catch (e) { showError(e.message); }
+        }
+
+        async function viewLogs(id) {
+            document.getElementById('logsContent').textContent = 'Loading...';
+            document.getElementById('logsStatus').textContent = '';
+            document.getElementById('logsError').textContent = '';
+            document.getElementById('logsModal').classList.add('show');
+            try {
+                const res = await apiFetch(`/deployment-jobs/${id}`);
+                if (!res.ok) throw new Error('Failed to load job');
+                const job = await res.json();
+                document.getElementById('logsStatus').textContent = job.status;
+                document.getElementById('logsStatus').className = `badge badge-${job.status}`;
+                document.getElementById('logsError').textContent = job.errorMessage || '';
+                document.getElementById('logsContent').textContent = job.logs || '(no output)';
+            } catch (e) { document.getElementById('logsContent').textContent = 'Error: ' + e.message; }
+        }
+
+        function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+        function loadTemplateFile(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                document.getElementById('templateInstallScript').value = e.target.result;
+                document.getElementById('templateFileName').textContent = file.name;
+            };
+            reader.readAsText(file);
+            input.value = '';
+        }
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        // Init
+        loadServers();
+        loadTemplates();
+        loadDeployments();
+    </script>
+</body>
+</html>

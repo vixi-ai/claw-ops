@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Users - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <div class="flex-between mb-16">
+            <h2>User Management</h2>
+            <button class="btn btn-primary" onclick="openCreateModal()">+ Create User</button>
+        </div>
+
+        <div class="card" style="padding: 0; overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTable">
+                    <tr><td colspan="6" class="text-muted" style="text-align:center; padding:32px;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination" id="pagination"></div>
+    </div>
+
+    <!-- Create / Edit Modal -->
+    <div class="modal-overlay" id="userModal">
+        <div class="modal">
+            <h2 id="modalTitle">Create User</h2>
+            <div id="modalAlert" class="alert"></div>
+            <form id="userForm">
+                <input type="hidden" id="editUserId">
+                <div class="form-group">
+                    <label for="formEmail">Email</label>
+                    <input type="email" id="formEmail" required>
+                </div>
+                <div class="form-group">
+                    <label for="formUsername">Username</label>
+                    <input type="text" id="formUsername" required minlength="3" maxlength="50">
+                </div>
+                <div class="form-group" id="passwordGroup">
+                    <label for="formPassword">Password</label>
+                    <input type="password" id="formPassword" minlength="8">
+                </div>
+                <div class="form-group">
+                    <label for="formRole">Role</label>
+                    <select id="formRole">
+                        <option value="DEVOPS">DEVOPS</option>
+                        <option value="ADMIN">ADMIN</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="modalSubmitBtn">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Change Password Modal -->
+    <div class="modal-overlay" id="passwordModal">
+        <div class="modal">
+            <h2>Change Password</h2>
+            <div id="pwdAlert" class="alert"></div>
+            <form id="passwordForm">
+                <input type="hidden" id="pwdUserId">
+                <div class="form-group">
+                    <label for="newPassword">New Password</label>
+                    <input type="password" id="newPassword" required minlength="8">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-ghost" onclick="closePasswordModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Change Password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Users');
+
+        let currentPage = 0;
+        const pageSize = 15;
+
+        async function loadUsers(page = 0) {
+            currentPage = page;
+            const res = await apiFetch(`/users?page=${page}&size=${pageSize}&sort=createdAt,desc`);
+            if (!res.ok) { showError('Failed to load users'); return; }
+            const data = await res.json();
+            renderTable(data.content);
+            renderPagination(data);
+        }
+
+        function renderTable(users) {
+            const tbody = document.getElementById('usersTable');
+            if (!users.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px;">No users found</td></tr>';
+                return;
+            }
+            tbody.innerHTML = users.map(u => `
+                <tr>
+                    <td><strong>${esc(u.username)}</strong></td>
+                    <td>${esc(u.email)}</td>
+                    <td><span class="${u.role === 'ADMIN' ? 'role-admin' : 'role-devops'}">${u.role}</span></td>
+                    <td><span class="${u.enabled ? 'status-enabled' : 'status-disabled'}">${u.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                    <td class="text-muted text-sm">${formatDate(u.createdAt)}</td>
+                    <td>
+                        <div class="btn-group">
+                            <button class="btn btn-ghost btn-sm" onclick="openEditModal('${u.id}','${esc(u.email)}','${esc(u.username)}','${u.role}',${u.enabled})">Edit</button>
+                            <button class="btn btn-ghost btn-sm" onclick="openPasswordModal('${u.id}')">Password</button>
+                            <button class="btn btn-ghost btn-sm" onclick="toggleUser('${u.id}',${u.enabled})">${u.enabled ? 'Disable' : 'Enable'}</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteUser('${u.id}','${esc(u.username)}')">Delete</button>
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function renderPagination(data) {
+            const el = document.getElementById('pagination');
+            if (data.totalPages <= 1) { el.innerHTML = ''; return; }
+            el.innerHTML = `
+                <button class="btn btn-ghost btn-sm" ${data.first ? 'disabled' : ''} onclick="loadUsers(${currentPage - 1})">Prev</button>
+                <span>Page ${data.number + 1} of ${data.totalPages}</span>
+                <button class="btn btn-ghost btn-sm" ${data.last ? 'disabled' : ''} onclick="loadUsers(${currentPage + 1})">Next</button>
+            `;
+        }
+
+        // Create modal
+        function openCreateModal() {
+            document.getElementById('modalTitle').textContent = 'Create User';
+            document.getElementById('modalSubmitBtn').textContent = 'Create';
+            document.getElementById('editUserId').value = '';
+            document.getElementById('formEmail').value = '';
+            document.getElementById('formUsername').value = '';
+            document.getElementById('formPassword').value = '';
+            document.getElementById('formRole').value = 'DEVOPS';
+            document.getElementById('passwordGroup').style.display = 'block';
+            document.getElementById('formPassword').required = true;
+            hideAlert('modalAlert');
+            document.getElementById('userModal').classList.add('show');
+        }
+
+        function openEditModal(id, email, username, role, enabled) {
+            document.getElementById('modalTitle').textContent = 'Edit User';
+            document.getElementById('modalSubmitBtn').textContent = 'Save';
+            document.getElementById('editUserId').value = id;
+            document.getElementById('formEmail').value = email;
+            document.getElementById('formUsername').value = username;
+            document.getElementById('formRole').value = role;
+            document.getElementById('passwordGroup').style.display = 'none';
+            document.getElementById('formPassword').required = false;
+            hideAlert('modalAlert');
+            document.getElementById('userModal').classList.add('show');
+        }
+
+        function closeModal() {
+            document.getElementById('userModal').classList.remove('show');
+        }
+
+        document.getElementById('userForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlert('modalAlert');
+            const userId = document.getElementById('editUserId').value;
+            const email = document.getElementById('formEmail').value;
+            const username = document.getElementById('formUsername').value;
+            const password = document.getElementById('formPassword').value;
+            const role = document.getElementById('formRole').value;
+
+            let res;
+            if (userId) {
+                res = await apiFetch(`/users/${userId}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ email, username, role })
+                });
+            } else {
+                res = await apiFetch('/users', {
+                    method: 'POST',
+                    body: JSON.stringify({ email, username, password, role })
+                });
+            }
+
+            if (!res.ok) {
+                const err = await res.json();
+                const msg = err.messages ? err.messages.map(m => `${m.field}: ${m.message}`).join(', ') : err.message;
+                showAlert('modalAlert', msg || 'Operation failed', 'error');
+                return;
+            }
+
+            closeModal();
+            showSuccess(userId ? 'User updated' : 'User created');
+            loadUsers(currentPage);
+        });
+
+        // Password modal
+        function openPasswordModal(id) {
+            document.getElementById('pwdUserId').value = id;
+            document.getElementById('newPassword').value = '';
+            hideAlert('pwdAlert');
+            document.getElementById('passwordModal').classList.add('show');
+        }
+
+        function closePasswordModal() {
+            document.getElementById('passwordModal').classList.remove('show');
+        }
+
+        document.getElementById('passwordForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlert('pwdAlert');
+            const userId = document.getElementById('pwdUserId').value;
+            const newPassword = document.getElementById('newPassword').value;
+
+            const res = await apiFetch(`/users/${userId}/change-password`, {
+                method: 'POST',
+                body: JSON.stringify({ newPassword })
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                const msg = err.messages ? err.messages.map(m => `${m.field}: ${m.message}`).join(', ') : err.message;
+                showAlert('pwdAlert', msg || 'Failed to change password', 'error');
+                return;
+            }
+
+            closePasswordModal();
+            showSuccess('Password changed');
+        });
+
+        // Toggle enable/disable
+        async function toggleUser(id, currentlyEnabled) {
+            const res = await apiFetch(`/users/${id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ enabled: !currentlyEnabled })
+            });
+            if (!res.ok) { showError('Failed to update user'); return; }
+            showSuccess(currentlyEnabled ? 'User disabled' : 'User enabled');
+            loadUsers(currentPage);
+        }
+
+        // Delete
+        async function deleteUser(id, username) {
+            if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+            const res = await apiFetch(`/users/${id}`, { method: 'DELETE' });
+            if (!res.ok) { showError('Failed to delete user'); return; }
+            showSuccess('User deleted');
+            loadUsers(currentPage);
+        }
+
+        function esc(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        loadUsers();
+    </script>
+</body>
+</html>
