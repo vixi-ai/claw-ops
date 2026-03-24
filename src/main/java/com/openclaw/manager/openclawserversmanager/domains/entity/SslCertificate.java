@@ -21,7 +21,7 @@ public class SslCertificate {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(name = "server_id", nullable = false)
+    @Column(name = "server_id")
     private UUID serverId;
 
     @Column(name = "assignment_id")
@@ -45,6 +45,9 @@ public class SslCertificate {
 
     @Column(name = "last_renewed_at")
     private Instant lastRenewedAt;
+
+    @Column(name = "provisioning_job_id")
+    private UUID provisioningJobId;
 
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
@@ -89,6 +92,9 @@ public class SslCertificate {
 
     public Instant getLastRenewedAt() { return lastRenewedAt; }
     public void setLastRenewedAt(Instant lastRenewedAt) { this.lastRenewedAt = lastRenewedAt; }
+
+    public UUID getProvisioningJobId() { return provisioningJobId; }
+    public void setProvisioningJobId(UUID provisioningJobId) { this.provisioningJobId = provisioningJobId; }
 
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }

@@ -18,5 +18,9 @@ public interface SslCertificateRepository extends JpaRepository<SslCertificate, 
 
     List<SslCertificate> findByServerIdIn(List<UUID> serverIds);
 
+    Optional<SslCertificate> findByAssignmentId(UUID assignmentId);
+
+    List<SslCertificate> findByAssignmentIdIn(List<UUID> assignmentIds);
+
     void deleteByServerId(UUID serverId);
 }
