@@ -1,5 +1,6 @@
 package com.openclaw.manager.openclawserversmanager.users.dto;
 
+import com.openclaw.manager.openclawserversmanager.common.validation.StrongPassword;
 import com.openclaw.manager.openclawserversmanager.users.entity.Role;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -13,7 +14,7 @@ public record CreateUserRequest(
         @NotBlank @Size(min = 3, max = 50)
         String username,
 
-        @NotBlank @Size(min = 8, max = 128)
+        @NotBlank @StrongPassword
         String password,
 
         @NotNull

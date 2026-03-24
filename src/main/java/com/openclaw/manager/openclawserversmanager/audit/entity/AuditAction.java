@@ -10,6 +10,7 @@ public enum AuditAction {
     USER_DISABLED,
     USER_DELETED,
     USER_PASSWORD_CHANGED,
+    USER_ACCOUNT_LOCKED,
 
     // Server operations (future)
     SERVER_CREATED,
