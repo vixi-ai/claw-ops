@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://github.com/vixi-ai/claw-ops"><img src="https://img.shields.io/github/stars/vixi-ai/claw-ops?style=flat" alt="GitHub Stars"></a>
   <a href="https://github.com/vixi-ai/claw-ops/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vixi-ai/claw-ops" alt="MIT License"></a>
+  <a href="https://hub.docker.com/r/teslicvukasin/claw-ops"><img src="https://img.shields.io/docker/pulls/teslicvukasin/claw-ops" alt="Docker Pulls"></a>
   <img src="https://img.shields.io/badge/Java-21-orange" alt="Java 21">
   <img src="https://img.shields.io/badge/Spring%20Boot-4.0.3-green" alt="Spring Boot">
   <img src="https://img.shields.io/badge/PostgreSQL-17-blue" alt="PostgreSQL">
@@ -53,16 +54,43 @@ ClawOps was designed for the [OpenClaw](https://github.com/openclaw) ecosystem b
 | WebSocket | Spring WebSocket (STOMP) |
 | API Docs | springdoc-openapi 3.0.2 (Swagger UI) |
 | Frontend | Vanilla HTML/CSS/JS dev admin panel |
+| Container | Docker ([`teslicvukasin/claw-ops`](https://hub.docker.com/r/teslicvukasin/claw-ops)) |
 
 ## Quick Start
 
-### Using Docker Compose (recommended)
+### Production Deployment with Docker (recommended)
+
+```bash
+# 1. Create a .env file with your production secrets
+cat > .env << 'EOF'
+DB_PASSWORD=your-secure-db-password
+MASTER_ENCRYPTION_KEY=$(openssl rand -base64 32)
+JWT_SECRET=$(openssl rand -base64 64)
+ADMIN_EMAIL=admin@yourdomain.com
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your-secure-admin-password
+EOF
+
+# 2. Download the production compose file and start
+curl -O https://raw.githubusercontent.com/vixi-ai/claw-ops/main/docker-compose.prod.yml
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The app and PostgreSQL start together. Access at `http://localhost:8080`.
+
+**Docker image:** [`teslicvukasin/claw-ops`](https://hub.docker.com/r/teslicvukasin/claw-ops)
+
+```bash
+docker pull teslicvukasin/claw-ops:latest
+```
+
+### Development Setup
 
 ```bash
 git clone https://github.com/vixi-ai/claw-ops.git
 cd claw-ops
 cp .env.example .env           # fill in MASTER_ENCRYPTION_KEY, JWT_SECRET, etc.
-docker-compose up -d           # starts PostgreSQL
+docker compose up -d           # starts PostgreSQL
 ./mvnw spring-boot:run         # starts the application
 ```
 
