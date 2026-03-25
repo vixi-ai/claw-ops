@@ -1,12 +1,10 @@
 package com.openclaw.manager.openclawserversmanager.domains.controller;
 
-import com.openclaw.manager.openclawserversmanager.domains.dto.BulkSslProvisionResponse;
-import com.openclaw.manager.openclawserversmanager.domains.dto.ProvisionSslRequest;
+import com.openclaw.manager.openclawserversmanager.domains.dto.ProvisioningJobResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslCertificateResponse;
-import com.openclaw.manager.openclawserversmanager.domains.entity.AssignmentStatus;
-import com.openclaw.manager.openclawserversmanager.domains.entity.DomainAssignment;
-import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
-import com.openclaw.manager.openclawserversmanager.domains.repository.DomainAssignmentRepository;
+import com.openclaw.manager.openclawserversmanager.domains.dto.TriggerProvisioningRequest;
+import com.openclaw.manager.openclawserversmanager.domains.entity.ProvisioningJobStatus;
+import com.openclaw.manager.openclawserversmanager.domains.service.ProvisioningOrchestrator;
 import com.openclaw.manager.openclawserversmanager.domains.service.SslService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -21,9 +19,9 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -32,33 +30,59 @@ import java.util.UUID;
 public class SslController {
 
     private final SslService sslService;
-    private final DomainAssignmentRepository domainAssignmentRepository;
+    private final ProvisioningOrchestrator provisioningOrchestrator;
 
     public SslController(SslService sslService,
-                         DomainAssignmentRepository domainAssignmentRepository) {
+                         ProvisioningOrchestrator provisioningOrchestrator) {
         this.sslService = sslService;
-        this.domainAssignmentRepository = domainAssignmentRepository;
+        this.provisioningOrchestrator = provisioningOrchestrator;
     }
+
+    // ── Provisioning (async) ──────────────────────────────
 
     @PostMapping
-    @Operation(summary = "Provision SSL certificate for a server")
-    public ResponseEntity<SslCertificateResponse> provision(
-            @Valid @RequestBody ProvisionSslRequest request, Authentication authentication) {
+    @Operation(summary = "Trigger async SSL provisioning for a domain assignment")
+    public ResponseEntity<ProvisioningJobResponse> provision(
+            @Valid @RequestBody TriggerProvisioningRequest request, Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
-
-        // Find active domain assignment for the server
-        List<DomainAssignment> assignments = domainAssignmentRepository
-                .findByResourceIdAndStatusNot(request.serverId(), AssignmentStatus.RELEASED);
-
-        if (assignments.isEmpty()) {
-            throw new DomainException("No active domain assignment found for server. Assign a domain first.");
-        }
-
-        DomainAssignment assignment = assignments.getFirst();
-        return ResponseEntity.ok(sslService.provision(
-                request.serverId(), assignment.getId(), assignment.getHostname(),
-                request.targetPort(), userId));
+        ProvisioningJobResponse job = provisioningOrchestrator.triggerProvisioning(
+                request.assignmentId(), request.targetPort(), userId);
+        return ResponseEntity.accepted().body(job);
     }
+
+    @GetMapping("/jobs")
+    @Operation(summary = "List provisioning jobs")
+    public ResponseEntity<Page<ProvisioningJobResponse>> getJobs(
+            @RequestParam(required = false) UUID serverId,
+            @RequestParam(required = false) ProvisioningJobStatus status,
+            Pageable pageable) {
+        return ResponseEntity.ok(provisioningOrchestrator.getJobs(serverId, status, pageable));
+    }
+
+    @GetMapping("/jobs/{jobId}")
+    @Operation(summary = "Get provisioning job status (poll this endpoint)")
+    public ResponseEntity<ProvisioningJobResponse> getJob(@PathVariable UUID jobId) {
+        return ResponseEntity.ok(provisioningOrchestrator.getJob(jobId));
+    }
+
+    @PostMapping("/jobs/{jobId}/retry")
+    @Operation(summary = "Retry a failed provisioning job")
+    public ResponseEntity<ProvisioningJobResponse> retryJob(
+            @PathVariable UUID jobId, Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        return ResponseEntity.ok(provisioningOrchestrator.retryProvisioning(jobId, userId));
+    }
+
+    @PostMapping("/jobs/{jobId}/cancel")
+    @Operation(summary = "Cancel a running provisioning job")
+    public ResponseEntity<Void> cancelJob(
+            @PathVariable UUID jobId, Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        provisioningOrchestrator.cancelProvisioning(jobId, userId);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── Certificate queries ──────────────────────────────
 
     @GetMapping
     @Operation(summary = "List all SSL certificates")
@@ -80,6 +104,8 @@ public class SslController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    // ── Certificate operations ──────────────────────────────
+
     @PostMapping("/{id}/renew")
     @Operation(summary = "Renew SSL certificate")
     public ResponseEntity<SslCertificateResponse> renew(@PathVariable UUID id, Authentication authentication) {
@@ -92,13 +118,6 @@ public class SslController {
     public ResponseEntity<SslCertificateResponse> check(@PathVariable UUID id, Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
         return ResponseEntity.ok(sslService.check(id, userId));
-    }
-
-    @PostMapping("/provision-all")
-    @Operation(summary = "Provision SSL for all servers that have a domain but no active certificate")
-    public ResponseEntity<BulkSslProvisionResponse> provisionAll(Authentication authentication) {
-        UUID userId = (UUID) authentication.getPrincipal();
-        return ResponseEntity.ok(sslService.provisionMissingForAll(userId));
     }
 
     @DeleteMapping("/{id}")

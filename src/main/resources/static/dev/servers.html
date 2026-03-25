@@ -67,6 +67,25 @@
         .mt-12 { margin-top: 12px; }
         .mb-0 { margin-bottom: 0; }
         .hidden { display: none !important; }
+
+        /* SSL Job Log Modal */
+        #sslLogModal .modal { max-width: 620px; }
+        .job-step { font-size: 11px; padding: 3px 8px; border-radius: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+        .job-step.running { background: #fef3c7; color: #92400e; }
+        .job-step.completed { background: #d1fae5; color: #065f46; }
+        .job-step.failed { background: #fee2e2; color: #991b1b; }
+        .job-log-box {
+            background: #0d1117; color: #c9d1d9; font-family: var(--mono); font-size: 11px;
+            line-height: 1.6; padding: 12px; border-radius: 6px; max-height: 320px;
+            overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 12px;
+        }
+        .job-error-box {
+            background: #1c0a0a; color: #fca5a5; font-family: var(--mono); font-size: 11px;
+            line-height: 1.5; padding: 10px 12px; border-radius: 6px; border: 1px solid #7f1d1d;
+            margin-top: 8px; white-space: pre-wrap; word-break: break-all;
+        }
+        .job-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-muted); margin-top: 8px; flex-wrap: wrap; }
+        .job-meta span { white-space: nowrap; }
     </style>
 </head>
 <body>
@@ -79,10 +98,7 @@
 
         <div class="flex-between mb-16">
             <h2>Servers</h2>
-            <div style="display:flex;gap:8px;">
-                <button class="btn" id="provisionAllBtn" onclick="provisionAllSsl(this)">Provision All SSL</button>
-                <button class="btn btn-primary" onclick="showCreateModal()">+ New Server</button>
-            </div>
+            <button class="btn btn-primary" onclick="showCreateModal()">+ New Server</button>
         </div>
 
         <div class="card" style="padding: 0; overflow-x: auto;">
@@ -219,6 +235,26 @@
                     <button type="submit" class="btn-submit" id="submitBtn">Add server</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- SSL Provisioning Log Modal -->
+    <div class="modal-overlay" id="sslLogModal">
+        <div class="modal" style="padding:24px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="margin:0;font-size:15px;" id="sslLogTitle">SSL Provisioning</h3>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span class="job-step" id="sslLogStep">—</span>
+                    <button class="btn-cancel" onclick="closeSslLog()" style="padding:4px 8px;">&times;</button>
+                </div>
+            </div>
+            <div class="job-meta" id="sslLogMeta"></div>
+            <div id="sslLogError" class="job-error-box hidden"></div>
+            <div id="sslLogBox" class="job-log-box">Waiting for logs...</div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
+                <button class="btn btn-ghost btn-sm" id="sslLogRetryBtn" onclick="retrySslJob()" style="display:none;">Retry</button>
+                <button class="btn btn-ghost btn-sm" onclick="closeSslLog()">Close</button>
+            </div>
         </div>
     </div>
 
@@ -462,12 +498,23 @@
                 tbody.innerHTML = '<tr><td colspan="9" class="text-muted" style="text-align:center;padding:32px;">No servers found</td></tr>';
                 return;
             }
-            // Load SSL status for all servers
+            // Load SSL status and domain assignments for all servers
             const sslMap = {};
+            const assignmentMap = {};
             await Promise.all(servers.map(async s => {
                 try {
                     const r = await apiFetch(`/ssl-certificates/server/${s.id}`);
                     if (r.ok) sslMap[s.id] = await r.json();
+                } catch (e) {}
+                try {
+                    const r = await apiFetch(`/domain-assignments?resourceId=${s.id}`);
+                    if (r.ok) {
+                        const data = await r.json();
+                        // API returns a plain array (not paged) when filtering by resourceId
+                        const list = Array.isArray(data) ? data : (data.content || []);
+                        const active = list.find(a => a.status !== 'RELEASED');
+                        if (active) assignmentMap[s.id] = active;
+                    }
                 } catch (e) {}
             }));
 
@@ -475,21 +522,28 @@
                 const authLabel = s.authType === 'PASSWORD' ? 'Password'
                     : s.passphraseCredentialId ? 'Key + Passphrase' : 'Private Key';
                 const ssl = sslMap[s.id];
+                const assignment = assignmentMap[s.id];
                 const sslColors = { ACTIVE: 'badge-active', FAILED: 'badge-error', PROVISIONING: 'badge-soon', EXPIRED: 'badge-warning', PENDING: 'badge-soon', REMOVING: 'badge-soon' };
                 let sslCell;
                 if (ssl) {
-                    const errTip = ssl.lastError ? ` title="${esc(ssl.lastError)}"` : '';
-                    sslCell = `<span class="badge ${sslColors[ssl.status] || 'badge-soon'}"${errTip}>${ssl.status}</span>`;
+                    sslCell = `<span class="badge ${sslColors[ssl.status] || 'badge-soon'}">${ssl.status}</span>`;
                     if (ssl.status === 'ACTIVE') {
                         sslCell += ` <button class="btn btn-ghost btn-sm" onclick="renewSsl('${ssl.id}', this)">Renew</button>`;
+                    } else if (ssl.status === 'PROVISIONING' && ssl.provisioningJobId) {
+                        sslCell += ` <button class="btn btn-ghost btn-sm" onclick="showJobLog('${ssl.provisioningJobId}')">View Log</button>`;
                     } else if (ssl.status === 'FAILED') {
-                        sslCell += ` <button class="btn btn-ghost btn-sm" onclick="provisionSsl('${s.id}', this)">Retry</button>`;
-                        if (ssl.lastError) sslCell += `<div class="text-muted" style="font-size:10px;max-width:200px;white-space:normal;margin-top:2px;">${esc(ssl.lastError.substring(0, 80))}${ssl.lastError.length > 80 ? '…' : ''}</div>`;
+                        if (ssl.provisioningJobId) {
+                            sslCell += ` <button class="btn btn-ghost btn-sm" onclick="showJobLog('${ssl.provisioningJobId}')">View Log</button>`;
+                        }
+                        if (assignment) {
+                            sslCell += ` <button class="btn btn-ghost btn-sm" onclick="provisionSsl('${assignment.id}', this)">Retry</button>`;
+                        }
+                        if (ssl.lastError) sslCell += `<div class="text-muted" style="font-size:10px;max-width:220px;white-space:normal;margin-top:2px;">${esc(ssl.lastError.substring(0, 100))}${ssl.lastError.length > 100 ? '...' : ''}</div>`;
                     }
-                } else if (s.assignedDomain) {
-                    sslCell = `<button class="btn btn-ghost btn-sm" onclick="provisionSsl('${s.id}', this)">Provision</button>`;
+                } else if (assignment) {
+                    sslCell = `<button class="btn btn-ghost btn-sm" onclick="provisionSsl('${assignment.id}', this)">Provision SSL</button>`;
                 } else {
-                    sslCell = '<span class="text-muted">—</span>';
+                    sslCell = '<span class="text-muted">No domain</span>';
                 }
                 return `
                 <tr>
@@ -541,28 +595,159 @@
             }
         }
 
-        async function provisionSsl(serverId, btn) {
+        // ── SSL Provisioning with live log modal ──
+        let activePollTimer = null;
+        let activeJobId = null;
+
+        async function provisionSsl(assignmentId, btn) {
             const origText = btn.textContent;
-            btn.textContent = 'Provisioning...';
+            btn.textContent = 'Starting...';
             btn.disabled = true;
             try {
                 const res = await apiFetch('/ssl-certificates', {
                     method: 'POST',
-                    body: JSON.stringify({ serverId })
+                    body: JSON.stringify({ assignmentId })
                 });
                 if (!res.ok) {
                     const err = await res.json();
                     showError(err.message || 'SSL provisioning failed');
                     return;
                 }
-                showSuccess('SSL certificate provisioned');
-                loadServers(currentPage);
+                const job = await res.json();
+                openSslLog(job);
             } catch (err) {
                 showError(err.message);
             } finally {
                 btn.textContent = origText;
                 btn.disabled = false;
             }
+        }
+
+        function openSslLog(job) {
+            activeJobId = job.id;
+            document.getElementById('sslLogTitle').textContent = 'SSL: ' + (job.hostname || 'Provisioning');
+            document.getElementById('sslLogBox').textContent = job.logs || 'Starting provisioning...';
+            document.getElementById('sslLogError').classList.add('hidden');
+            document.getElementById('sslLogRetryBtn').style.display = 'none';
+            updateSslLogStep(job);
+            updateSslLogMeta(job);
+            document.getElementById('sslLogModal').classList.add('show');
+            startPolling(job.id);
+        }
+
+        function closeSslLog() {
+            document.getElementById('sslLogModal').classList.remove('show');
+            stopPolling();
+            activeJobId = null;
+            loadServers(currentPage);
+        }
+
+        function updateSslLogStep(job) {
+            const el = document.getElementById('sslLogStep');
+            const stepLabels = {
+                PENDING_DNS: 'Creating DNS record',
+                DNS_CREATED: 'Waiting for DNS propagation',
+                DNS_PROPAGATED: 'DNS propagated',
+                ISSUING_CERT: 'Running certbot',
+                CERT_ISSUED: 'Certificate issued',
+                DEPLOYING_CONFIG: 'Deploying nginx config',
+                VERIFYING: 'Verifying HTTPS',
+                COMPLETED: 'Completed',
+                FAILED_RETRYABLE: 'Failed (retryable)',
+                FAILED_PERMANENT: 'Failed (permanent)'
+            };
+            el.textContent = stepLabels[job.currentStep] || job.currentStep;
+            el.className = 'job-step ' + (
+                job.status === 'COMPLETED' ? 'completed' :
+                job.status === 'FAILED' ? 'failed' : 'running'
+            );
+        }
+
+        function updateSslLogMeta(job) {
+            const parts = [];
+            parts.push('Job: ' + job.id.substring(0, 8));
+            if (job.retryCount > 0) parts.push('Retry #' + job.retryCount);
+            if (job.startedAt) parts.push('Started: ' + new Date(job.startedAt).toLocaleTimeString());
+            if (job.finishedAt) {
+                const dur = Math.round((new Date(job.finishedAt) - new Date(job.startedAt)) / 1000);
+                parts.push('Duration: ' + dur + 's');
+            }
+            document.getElementById('sslLogMeta').innerHTML = parts.map(p => '<span>' + p + '</span>').join('');
+        }
+
+        function startPolling(jobId) {
+            stopPolling();
+            const poll = async () => {
+                if (activeJobId !== jobId) return;
+                try {
+                    const res = await apiFetch(`/ssl-certificates/jobs/${jobId}`);
+                    if (!res.ok) return;
+                    const job = await res.json();
+
+                    // Update log box
+                    const logBox = document.getElementById('sslLogBox');
+                    logBox.textContent = job.logs || 'Waiting for logs...';
+                    logBox.scrollTop = logBox.scrollHeight;
+
+                    updateSslLogStep(job);
+                    updateSslLogMeta(job);
+
+                    if (job.status === 'COMPLETED') {
+                        showSuccess('SSL provisioned for ' + job.hostname);
+                        return;
+                    }
+                    if (job.status === 'FAILED') {
+                        const errEl = document.getElementById('sslLogError');
+                        errEl.textContent = job.errorMessage || 'Unknown error';
+                        errEl.classList.remove('hidden');
+                        if (job.currentStep === 'FAILED_RETRYABLE') {
+                            document.getElementById('sslLogRetryBtn').style.display = '';
+                        }
+                        return;
+                    }
+                    // Still running — poll again
+                    activePollTimer = setTimeout(poll, 2000);
+                } catch (e) {
+                    activePollTimer = setTimeout(poll, 3000);
+                }
+            };
+            // Poll immediately, then every 2 seconds
+            poll();
+        }
+
+        function stopPolling() {
+            if (activePollTimer) { clearTimeout(activePollTimer); activePollTimer = null; }
+        }
+
+        async function retrySslJob() {
+            if (!activeJobId) return;
+            document.getElementById('sslLogRetryBtn').style.display = 'none';
+            document.getElementById('sslLogError').classList.add('hidden');
+            document.getElementById('sslLogBox').textContent += '\n--- Retrying ---\n';
+            try {
+                const res = await apiFetch(`/ssl-certificates/jobs/${activeJobId}/retry`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json();
+                    showError(err.message || 'Retry failed');
+                    return;
+                }
+                const job = await res.json();
+                updateSslLogStep(job);
+                updateSslLogMeta(job);
+                startPolling(job.id);
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        // Show log for an existing job (click on PROVISIONING badge)
+        async function showJobLog(jobId) {
+            try {
+                const res = await apiFetch(`/ssl-certificates/jobs/${jobId}`);
+                if (!res.ok) { showError('Failed to load job'); return; }
+                const job = await res.json();
+                openSslLog(job);
+            } catch (err) { showError(err.message); }
         }
 
         async function renewSsl(certId, btn) {
@@ -599,28 +784,6 @@
             const d = document.createElement('div');
             d.textContent = str;
             return d.innerHTML;
-        }
-
-        async function provisionAllSsl(btn) {
-            const origText = btn.textContent;
-            btn.textContent = 'Provisioning...';
-            btn.disabled = true;
-            try {
-                const res = await apiFetch('/ssl-certificates/provision-all', { method: 'POST' });
-                if (!res.ok) {
-                    const err = await res.json();
-                    showError(err.message || 'Bulk SSL provisioning failed');
-                    return;
-                }
-                const data = await res.json();
-                showSuccess(`SSL: ${data.provisioned} provisioned, ${data.skipped} skipped, ${data.failed} failed (${data.total} total)`);
-                loadServers(currentPage);
-            } catch (err) {
-                showError(err.message);
-            } finally {
-                btn.textContent = origText;
-                btn.disabled = false;
-            }
         }
 
         loadServers();

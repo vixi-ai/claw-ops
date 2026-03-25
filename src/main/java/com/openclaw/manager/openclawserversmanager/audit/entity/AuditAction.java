@@ -10,6 +10,7 @@ public enum AuditAction {
     USER_DISABLED,
     USER_DELETED,
     USER_PASSWORD_CHANGED,
+    USER_ACCOUNT_LOCKED,
 
     // Server operations (future)
     SERVER_CREATED,
@@ -70,5 +71,12 @@ public enum AuditAction {
     SSL_PROVISIONED,
     SSL_RENEWED,
     SSL_REMOVED,
-    SSL_CHECK
+    SSL_CHECK,
+
+    // SSL provisioning jobs
+    SSL_PROVISION_TRIGGERED,
+    SSL_PROVISION_COMPLETED,
+    SSL_PROVISION_FAILED,
+    SSL_PROVISION_RETRIED,
+    SSL_PROVISION_CANCELLED
 }

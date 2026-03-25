@@ -13,6 +13,7 @@ public final class SslCertificateMapper {
                 cert.getId(),
                 cert.getServerId(),
                 cert.getAssignmentId(),
+                cert.getProvisioningJobId(),
                 cert.getHostname(),
                 cert.getStatus(),
                 cert.getAdminEmail(),

@@ -36,6 +36,19 @@ build/
 .env
 docker-compose.override.yml
 
+### Certificates & Keys ###
+*.pem
+*.key
+*.crt
+*.jks
+*.p12
+*.pfx
+*.keystore
+known_hosts
+
+### Logs ###
+*.log
+logs/
 
 ###Claude ###
 .claude/

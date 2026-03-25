@@ -20,4 +20,15 @@ public class AsyncConfig implements AsyncConfigurer {
         exec.initialize();
         return exec;
     }
+
+    @Bean(name = "provisioningExecutor")
+    public ThreadPoolTaskExecutor provisioningExecutor() {
+        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+        exec.setCorePoolSize(2);
+        exec.setMaxPoolSize(5);
+        exec.setQueueCapacity(20);
+        exec.setThreadNamePrefix("ssl-provision-");
+        exec.initialize();
+        return exec;
+    }
 }

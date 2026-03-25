@@ -57,7 +57,7 @@ public class DomainAssignmentService {
     private final HostnameStrategy hostnameStrategy;
     private final DomainEventService domainEventService;
     private final AuditService auditService;
-    private final SslService sslService;
+    private final ProvisioningOrchestrator provisioningOrchestrator;
 
     public DomainAssignmentService(DomainAssignmentRepository domainAssignmentRepository,
                                     ManagedZoneService managedZoneService,
@@ -68,7 +68,7 @@ public class DomainAssignmentService {
                                     HostnameStrategy hostnameStrategy,
                                     DomainEventService domainEventService,
                                     AuditService auditService,
-                                    @Lazy SslService sslService) {
+                                    @Lazy ProvisioningOrchestrator provisioningOrchestrator) {
         this.domainAssignmentRepository = domainAssignmentRepository;
         this.managedZoneService = managedZoneService;
         this.providerAccountService = providerAccountService;
@@ -78,7 +78,7 @@ public class DomainAssignmentService {
         this.hostnameStrategy = hostnameStrategy;
         this.domainEventService = domainEventService;
         this.auditService = auditService;
-        this.sslService = sslService;
+        this.provisioningOrchestrator = provisioningOrchestrator;
     }
 
     @Transactional
@@ -149,11 +149,11 @@ public class DomainAssignmentService {
                     "Server domain assigned: %s → %s".formatted(hostname, ipAddress));
         } catch (Exception ignored) { }
 
-        // Best-effort SSL auto-provision for server assignments
+        // Best-effort async SSL provisioning for server assignments
         try {
-            sslService.provision(server.getId(), assignment.getId(), hostname, null, userId);
+            provisioningOrchestrator.triggerProvisioning(assignment.getId(), null, userId);
         } catch (Exception e) {
-            log.warn("Auto-provision SSL failed for {}: {}", hostname, e.getMessage());
+            log.warn("Auto-trigger SSL provisioning failed for {}: {}", hostname, e.getMessage());
         }
 
         return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName());
@@ -430,11 +430,11 @@ public class DomainAssignmentService {
                     "Auto-assigned domain: %s → %s".formatted(hostname, serverIp));
         } catch (Exception ignored) { }
 
-        // Best-effort SSL auto-provision
+        // Best-effort async SSL provisioning
         try {
-            sslService.provision(serverId, assignment.getId(), hostname, null, userId);
+            provisioningOrchestrator.triggerProvisioning(assignment.getId(), null, userId);
         } catch (Exception e) {
-            log.warn("Auto-provision SSL failed for {}: {}", hostname, e.getMessage());
+            log.warn("Auto-trigger SSL provisioning failed for {}: {}", hostname, e.getMessage());
         }
 
         return Optional.of(DomainAssignmentMapper.toResponse(assignment, zone.getZoneName()));

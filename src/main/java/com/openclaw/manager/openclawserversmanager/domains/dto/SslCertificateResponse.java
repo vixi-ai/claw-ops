@@ -9,6 +9,7 @@ public record SslCertificateResponse(
         UUID id,
         UUID serverId,
         UUID assignmentId,
+        UUID provisioningJobId,
         String hostname,
         SslStatus status,
         String adminEmail,
