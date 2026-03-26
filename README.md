@@ -61,22 +61,20 @@ ClawOps was designed for the [OpenClaw](https://github.com/openclaw) ecosystem b
 ### Production Deployment with Docker (recommended)
 
 ```bash
-# 1. Create a .env file with your production secrets
-cat > .env << 'EOF'
-DB_PASSWORD=your-secure-db-password
-MASTER_ENCRYPTION_KEY=$(openssl rand -base64 32)
-JWT_SECRET=$(openssl rand -base64 64)
-ADMIN_EMAIL=admin@yourdomain.com
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your-secure-admin-password
-EOF
-
-# 2. Download the production compose file and start
+# 1. Download the production compose file and env template
 curl -O https://raw.githubusercontent.com/vixi-ai/claw-ops/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/vixi-ai/claw-ops/main/.env.example
+
+# 2. Copy the template to .env and replace the placeholder values
+cp .env.example .env
+
+# 3. Start the full stack
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-The app and PostgreSQL start together. Access at `http://localhost:8080`.
+The production compose file starts the frontend at `http://localhost:3000`, the backend API at `http://localhost:8080`, and PostgreSQL inside the Compose network.
+
+`docker-compose.yml` is not the production stack. It only starts PostgreSQL for local development.
 
 **Docker image:** [`teslicvukasin/claw-ops`](https://hub.docker.com/r/teslicvukasin/claw-ops)
 
@@ -90,7 +88,7 @@ docker pull teslicvukasin/claw-ops:latest
 git clone https://github.com/vixi-ai/claw-ops.git
 cd claw-ops
 cp .env.example .env           # fill in MASTER_ENCRYPTION_KEY, JWT_SECRET, etc.
-docker compose up -d           # starts PostgreSQL
+docker compose up -d           # starts PostgreSQL only
 ./mvnw spring-boot:run         # starts the application
 ```
 
