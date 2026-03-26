@@ -1,3 +1,6 @@
+# Development helper only.
+# Starts PostgreSQL for running the Spring Boot app locally from source.
+# For the full production stack, use docker-compose.prod.yml with a real .env file.
 services:
   postgres:
     image: postgres:17-alpine

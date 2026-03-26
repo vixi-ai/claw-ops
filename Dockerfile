@@ -21,6 +21,6 @@ USER appuser
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -qO- http://localhost:8080/api/v1/auth/login 2>&1 | head -1 || exit 1
+  CMD wget -q --spider http://localhost:8080/dev/login.html || exit 1
 
 ENTRYPOINT ["java", "-jar", "app.jar"]
