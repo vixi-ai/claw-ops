@@ -111,11 +111,17 @@ public class InteractiveDeploymentService {
             try {
                 // Small delay to let the shell initialize and welcome banner appear
                 Thread.sleep(800);
+                String remotePath = "/tmp/_deploy_" + jobId.toString().substring(0, 8) + ".sh";
                 String heredocMarker = "DEPLOY_SCRIPT_EOF_" + jobId.toString().substring(0, 8);
-                String command = "bash <<'" + heredocMarker + "'\n"
+                // Write script to a temp file via heredoc, then execute it interactively
+                // This keeps stdin connected to the terminal so read/prompts work
+                String command = "cat > " + remotePath + " <<'" + heredocMarker + "'\n"
                         + scriptContent + "\n"
                         + heredocMarker + "\n"
+                        + "chmod +x " + remotePath + "\n"
+                        + "bash " + remotePath + "\n"
                         + "__DEPLOY_EC=$?\n"
+                        + "rm -f " + remotePath + "\n"
                         + "echo __EXIT_CODE:${__DEPLOY_EC}__\n"
                         + "exit ${__DEPLOY_EC}\n";
                 sshSession.getOutputStream().write(command.getBytes(StandardCharsets.UTF_8));
