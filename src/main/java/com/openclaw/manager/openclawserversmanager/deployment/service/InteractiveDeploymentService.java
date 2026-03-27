@@ -136,8 +136,9 @@ public class InteractiveDeploymentService {
                 sshSession.getOutputStream().flush();
                 Thread.sleep(200);
 
-                // Phase 3: Execute the wrapper — stdin stays free for interactive input
-                String execCmd = "bash " + wrapperPath + "\n";
+                // Phase 3: Execute the wrapper, then exit the login shell to close the SSH session.
+                // The "; exit" runs in the login shell after the wrapper subshell returns.
+                String execCmd = "bash " + wrapperPath + "; exit\n";
                 sshSession.getOutputStream().write(execCmd.getBytes(StandardCharsets.UTF_8));
                 sshSession.getOutputStream().flush();
 

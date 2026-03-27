@@ -53,7 +53,8 @@
       "Bash(grep -r \"dockerhub\\\\|docker.io\\\\|openclaw\" docker-compose*.yml)",
       "Bash(cat docker-compose*.yml)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(exit\" to the wrapper execution line so the login:*)"
     ],
     "additionalDirectories": [
       "e:\\Reputeo\\openclaw-servers-manager\\.claude",
