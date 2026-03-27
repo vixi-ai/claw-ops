@@ -182,6 +182,11 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             // Resume direct streaming
             Thread.ofVirtual().name("deploy-stream-" + terminalSession.getSessionId()).start(() ->
                     streamDeploymentOutput(wsSession, terminalSession));
+
+            // Trigger script execution if it hasn't been sent yet (first connect always comes through
+            // reconnection path because the session is created before the WebSocket connects)
+            interactiveDeploymentService.executeScript(
+                    terminalSession.getDeploymentJobId(), terminalSession.getSshSession());
         }
 
         log.info("Deployment terminal reconnected for job {}", tokenInfo.jobId());
