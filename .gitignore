@@ -51,4 +51,6 @@ known_hosts
 logs/
 
 ###Claude ###
-#.claude/
+.claude/
+
+.zip
