@@ -26,17 +26,20 @@ public class DeploymentJobService {
     private final DeploymentScriptService scriptService;
     private final ServerService serverService;
     private final ScriptRunner scriptRunner;
+    private final InteractiveDeploymentService interactiveDeploymentService;
     private final AuditService auditService;
 
     public DeploymentJobService(DeploymentJobRepository jobRepository,
                                 DeploymentScriptService scriptService,
                                 ServerService serverService,
                                 ScriptRunner scriptRunner,
+                                InteractiveDeploymentService interactiveDeploymentService,
                                 AuditService auditService) {
         this.jobRepository = jobRepository;
         this.scriptService = scriptService;
         this.serverService = serverService;
         this.scriptRunner = scriptRunner;
+        this.interactiveDeploymentService = interactiveDeploymentService;
         this.auditService = auditService;
     }
 
@@ -59,10 +62,17 @@ public class DeploymentJobService {
         job.setScriptName(script.getName());
         job.setTriggeredBy(userId);
         job.setStatus(DeploymentStatus.PENDING);
+        job.setInteractive(request.interactive());
         DeploymentJob saved = jobRepository.save(job);
 
-        // Fire async execution
-        scriptRunner.run(saved.getId(), request.serverId(), script.getScriptContent());
+        if (request.interactive()) {
+            // Start interactive deployment with terminal session
+            interactiveDeploymentService.startInteractiveDeployment(
+                    saved.getId(), request.serverId(), userId, script.getScriptContent());
+        } else {
+            // Fire async execution (non-interactive)
+            scriptRunner.run(saved.getId(), request.serverId(), script.getScriptContent());
+        }
 
         try {
             auditService.log(AuditAction.JOB_TRIGGERED, "DEPLOYMENT_JOB", saved.getId(), userId,

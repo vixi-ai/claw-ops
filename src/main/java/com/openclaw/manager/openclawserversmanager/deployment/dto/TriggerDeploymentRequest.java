@@ -6,5 +6,6 @@ import java.util.UUID;
 
 public record TriggerDeploymentRequest(
         @NotNull UUID serverId,
-        @NotNull UUID scriptId
+        @NotNull UUID scriptId,
+        boolean interactive
 ) {}

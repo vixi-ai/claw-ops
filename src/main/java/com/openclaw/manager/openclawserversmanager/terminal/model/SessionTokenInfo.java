@@ -7,9 +7,23 @@ public record SessionTokenInfo(
         String token,
         UUID userId,
         UUID serverId,
-        Instant expiresAt
+        Instant expiresAt,
+        UUID jobId,
+        String existingSessionId
 ) {
+    public SessionTokenInfo(String token, UUID userId, UUID serverId, Instant expiresAt) {
+        this(token, userId, serverId, expiresAt, null, null);
+    }
+
     public boolean isExpired() {
         return Instant.now().isAfter(expiresAt);
+    }
+
+    public boolean isDeploymentToken() {
+        return jobId != null;
+    }
+
+    public boolean isReconnectionToken() {
+        return existingSessionId != null;
     }
 }
