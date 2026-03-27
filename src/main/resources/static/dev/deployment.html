@@ -13,14 +13,31 @@
         .field-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; }
         .field-label .req { color: var(--danger); opacity: 0.7; }
         .field-label .opt { font-weight: 400; opacity: 0.5; margin-left: 4px; }
-        .badge-PENDING { background: #fef3c7; color: #92400e; }
-        .badge-RUNNING { background: #dbeafe; color: #1e40af; }
-        .badge-COMPLETED { background: #d1fae5; color: #065f46; }
-        .badge-FAILED { background: #fee2e2; color: #991b1b; }
-        .badge-CANCELLED { background: var(--surface-hover); color: var(--text-muted); }
-        .log-pre { background: #1a1a2e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
-        .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; }
-        .filter-bar select { font-size: 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
+        .badge-PENDING { background: rgba(255, 217, 61, 0.12); color: var(--warning); border: 1px solid rgba(255, 217, 61, 0.2); }
+        .badge-RUNNING { background: rgba(108, 138, 255, 0.12); color: var(--primary); border: 1px solid rgba(108, 138, 255, 0.2); animation: pulse-running 2s ease-in-out infinite; }
+        .badge-COMPLETED { background: rgba(78, 205, 196, 0.12); color: var(--success); border: 1px solid rgba(78, 205, 196, 0.2); }
+        .badge-FAILED { background: rgba(255, 107, 107, 0.12); color: var(--danger); border: 1px solid rgba(255, 107, 107, 0.2); }
+        .badge-CANCELLED { background: rgba(139, 143, 163, 0.1); color: var(--text-muted); border: 1px solid rgba(139, 143, 163, 0.15); }
+        @keyframes pulse-running { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+        .log-pre { background: #0d1117; color: #c9d1d9; padding: 16px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; border: 1px solid #21262d; }
+
+        /* Filter bar */
+        .filter-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+        .filter-bar select { font-size: 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); min-width: 140px; }
+        .filter-bar select:focus { border-color: var(--primary); }
+        .filter-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; margin-right: 4px; }
+
+        /* Job rows */
+        .job-row-RUNNING { border-left: 3px solid var(--primary); }
+        .job-row-FAILED { border-left: 3px solid var(--danger); }
+        .job-row-COMPLETED { border-left: 3px solid var(--success); }
+        .job-row-PENDING { border-left: 3px solid var(--warning); }
+        .job-row-CANCELLED { border-left: 3px solid transparent; }
+        .job-script-name { font-weight: 500; }
+        .job-server { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+        .job-time { font-size: 12px; color: var(--text-muted); }
+        .job-duration { font-family: var(--mono); font-size: 12px; }
 
         /* Terminal modal */
         .terminal-modal .modal { max-width: 900px; width: 90vw; }
@@ -71,7 +88,7 @@
         <!-- SECTION 1: SCRIPT LIBRARY -->
         <div class="section">
             <div class="section-header">
-                <h2>Script Library</h2>
+                <h2>Script Library <span id="scriptCount" style="font-size:12px;font-weight:400;color:var(--text-muted);"></span></h2>
                 <button class="btn btn-primary" onclick="showScriptModal()">+ New Script</button>
             </div>
             <div class="card" style="padding:0;overflow-x:auto;">
@@ -85,18 +102,21 @@
         <!-- SECTION 2: JOB HISTORY -->
         <div class="section">
             <div class="section-header">
-                <h2>Job History</h2>
+                <h2>Job History <span id="jobHistoryCount" style="font-size:12px;font-weight:400;color:var(--text-muted);"></span></h2>
             </div>
             <div class="filter-bar">
+                <span class="filter-label">Filter:</span>
                 <select id="filterServer" onchange="loadJobs()"><option value="">All servers</option></select>
                 <select id="filterStatus" onchange="loadJobs()">
                     <option value="">All statuses</option>
-                    <option value="PENDING">PENDING</option>
-                    <option value="RUNNING">RUNNING</option>
-                    <option value="COMPLETED">COMPLETED</option>
-                    <option value="FAILED">FAILED</option>
-                    <option value="CANCELLED">CANCELLED</option>
+                    <option value="PENDING">Pending</option>
+                    <option value="RUNNING">Running</option>
+                    <option value="COMPLETED">Completed</option>
+                    <option value="FAILED">Failed</option>
+                    <option value="CANCELLED">Cancelled</option>
                 </select>
+                <span style="flex:1"></span>
+                <span id="jobCount" class="filter-label" style="text-transform:none;letter-spacing:0;"></span>
             </div>
             <div class="card" style="padding:0;overflow-x:auto;">
                 <table>
@@ -340,6 +360,7 @@
                 if (!res.ok) throw new Error('Failed to load scripts');
                 const data = await res.json();
                 const rows = (data.content || []);
+                document.getElementById('scriptCount').textContent = rows.length > 0 ? `(${rows.length})` : '';
                 if (rows.length === 0) {
                     document.getElementById('scriptsTable').innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">No scripts yet</td></tr>';
                     return;
@@ -610,9 +631,17 @@
                 const rows = data.content || [];
                 if (rows.length === 0) {
                     document.getElementById('jobsTable').innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:32px;">No jobs yet</td></tr>';
+                    document.getElementById('jobCount').textContent = '';
+                    document.getElementById('jobHistoryCount').textContent = '';
                     stopAutoRefresh();
                     return;
                 }
+                document.getElementById('jobHistoryCount').textContent = `(${rows.length})`;
+                const running = rows.filter(j => j.status === 'RUNNING').length;
+                const countParts = [`${rows.length} job${rows.length !== 1 ? 's' : ''}`];
+                if (running > 0) countParts.push(`${running} running`);
+                document.getElementById('jobCount').textContent = countParts.join(' \u00b7 ');
+
                 document.getElementById('jobsTable').innerHTML = rows.map(j => {
                     let actions = '';
                     if (j.interactive && j.status === 'RUNNING' && j.terminalSessionId) {
@@ -623,12 +652,12 @@
                     if (j.status === 'PENDING') {
                         actions += ` <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="cancelJob('${j.id}')">Cancel</button>`;
                     }
-                    return `<tr>
-                        <td>${esc(j.scriptName || '-')}</td>
-                        <td>${esc(serverName(j.serverId))}</td>
+                    return `<tr class="job-row-${j.status}">
+                        <td class="job-script-name">${esc(j.scriptName || '-')}</td>
+                        <td class="job-server">${esc(serverName(j.serverId))}</td>
                         <td><span class="badge badge-${j.status}">${j.status}${j.interactive && j.status === 'RUNNING' ? ' (interactive)' : ''}</span></td>
-                        <td>${formatDate(j.startedAt)}</td>
-                        <td>${duration(j)}</td>
+                        <td class="job-time">${formatDate(j.startedAt)}</td>
+                        <td class="job-duration">${duration(j)}</td>
                         <td>${actions}</td>
                     </tr>`;
                 }).join('');

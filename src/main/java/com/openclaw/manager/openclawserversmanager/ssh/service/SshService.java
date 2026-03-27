@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -114,6 +115,44 @@ public class SshService {
         } catch (IOException e) {
             throw new SshConnectionException(
                     "SFTP upload failed on %s — %s".formatted(server.getHostname(), e.getMessage()), e);
+        }
+    }
+
+    public List<FileEntry> listDirectory(Server server, String path) {
+        if (server.getCredentialId() == null) {
+            throw new SshConnectionException("No credential configured for server '" + server.getName() + "'");
+        }
+
+        String safePath = (path == null || path.isBlank() || "~".equals(path)) ? "." : path;
+        if (safePath.contains("..")) {
+            throw new IllegalArgumentException("Path must not contain '..' (path traversal)");
+        }
+
+        try (SSHClient ssh = createClient(server)) {
+            try (SFTPClient sftp = ssh.newSFTPClient()) {
+                // Resolve "." to the actual absolute path (home directory)
+                String resolvedPath = sftp.canonicalize(safePath);
+                List<net.schmizz.sshj.sftp.RemoteResourceInfo> entries = sftp.ls(resolvedPath);
+                final String basePath = resolvedPath;
+                return entries.stream()
+                        .map(e -> new FileEntry(
+                                e.getName(),
+                                basePath.endsWith("/") ? basePath + e.getName() : basePath + "/" + e.getName(),
+                                e.isDirectory(),
+                                e.getAttributes().getSize(),
+                                e.getAttributes().getMtime()
+                        ))
+                        .sorted((a, b) -> {
+                            if (a.directory() != b.directory()) return a.directory() ? -1 : 1;
+                            return a.name().compareToIgnoreCase(b.name());
+                        })
+                        .toList();
+            }
+        } catch (SshConnectionException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new SshConnectionException(
+                    "SFTP listing failed on %s — %s".formatted(server.getHostname(), e.getMessage()), e);
         }
     }
 

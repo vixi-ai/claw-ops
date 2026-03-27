@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openclaw.manager.openclawserversmanager.audit.entity.AuditAction;
 import com.openclaw.manager.openclawserversmanager.audit.service.AuditService;
 import com.openclaw.manager.openclawserversmanager.common.exception.ResourceNotFoundException;
+import com.openclaw.manager.openclawserversmanager.deployment.service.InteractiveDeploymentService;
 import com.openclaw.manager.openclawserversmanager.servers.entity.Server;
 import com.openclaw.manager.openclawserversmanager.servers.service.ServerService;
 import com.openclaw.manager.openclawserversmanager.ssh.model.SshSession;
@@ -36,6 +37,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(TerminalWebSocketHandler.class);
 
     private final TerminalSessionService terminalSessionService;
+    private final InteractiveDeploymentService interactiveDeploymentService;
     private final SshService sshService;
     private final ServerService serverService;
     private final AuditService auditService;
@@ -43,14 +45,16 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
     // wsSessionId -> terminalSession
     private final ConcurrentHashMap<String, TerminalSession> wsSessionMap = new ConcurrentHashMap<>();
-    // terminalSessionId -> active WebSocketSession (for deployment sessions with detach/reattach)
+    // terminalSessionId -> active WebSocketSession (for deployment sessions)
     private final ConcurrentHashMap<String, WebSocketSession> deploymentWsSessions = new ConcurrentHashMap<>();
 
     public TerminalWebSocketHandler(TerminalSessionService terminalSessionService,
+                                     InteractiveDeploymentService interactiveDeploymentService,
                                      SshService sshService,
                                      ServerService serverService,
                                      AuditService auditService) {
         this.terminalSessionService = terminalSessionService;
+        this.interactiveDeploymentService = interactiveDeploymentService;
         this.sshService = sshService;
         this.serverService = serverService;
         this.auditService = auditService;
@@ -81,7 +85,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        // Deployment new connection (session already created by InteractiveDeploymentService)
+        // Deployment new connection
         if ("deployment".equals(mode) && tokenInfo.isDeploymentToken()) {
             handleDeploymentNewConnection(wsSession, tokenInfo);
             return;
@@ -124,7 +128,6 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         } catch (Exception ignored) {
         }
 
-        // Start output streaming thread
         Thread.ofVirtual().name("terminal-" + terminalSession.getSessionId()).start(() ->
                 streamOutput(wsSession, terminalSession));
     }
@@ -139,15 +142,19 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         wsSessionMap.put(wsSession.getId(), terminalSession);
         deploymentWsSessions.put(terminalSession.getSessionId(), wsSession);
 
-        // Replay buffered output
+        // Replay any buffered output (e.g. welcome banner that appeared before WS connected)
         String buffered = terminalSession.getBufferedOutput();
         if (!buffered.isEmpty()) {
             sendMessage(wsSession, new TerminalOutput("OUTPUT", buffered));
         }
 
-        // Start streaming new output to this WebSocket
+        // Start direct SSH output streaming (reads from SSH, sends to WS, AND buffers)
         Thread.ofVirtual().name("deploy-stream-" + terminalSession.getSessionId()).start(() ->
-                streamDeploymentOutput(terminalSession));
+                streamDeploymentOutput(wsSession, terminalSession));
+
+        // Trigger script execution now that the WebSocket is ready
+        interactiveDeploymentService.executeScript(
+                terminalSession.getDeploymentJobId(), terminalSession.getSshSession());
 
         log.info("Deployment terminal connected for job {}", tokenInfo.jobId());
     }
@@ -159,20 +166,27 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        // Replace the WebSocket reference
         wsSessionMap.put(wsSession.getId(), terminalSession);
         deploymentWsSessions.put(terminalSession.getSessionId(), wsSession);
         terminalSession.touch();
 
-        // Replay buffered output
+        // Replay full buffered output
         String buffered = terminalSession.getBufferedOutput();
         if (!buffered.isEmpty()) {
             sendMessage(wsSession, new TerminalOutput("OUTPUT", buffered));
         }
 
-        // Check if script already completed
         if (terminalSession.isScriptCompleted()) {
             sendMessage(wsSession, new TerminalOutput("DEPLOYMENT_COMPLETE", "Script has finished"));
+        } else {
+            // Resume direct streaming
+            Thread.ofVirtual().name("deploy-stream-" + terminalSession.getSessionId()).start(() ->
+                    streamDeploymentOutput(wsSession, terminalSession));
+
+            // Trigger script execution if it hasn't been sent yet (first connect always comes through
+            // reconnection path because the session is created before the WebSocket connects)
+            interactiveDeploymentService.executeScript(
+                    terminalSession.getDeploymentJobId(), terminalSession.getSshSession());
         }
 
         log.info("Deployment terminal reconnected for job {}", tokenInfo.jobId());
@@ -197,7 +211,6 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
                 }
             }
             case "RESIZE" -> {
-                // sshj doesn't natively support window-change after session start — known limitation
                 log.debug("Resize requested ({}x{}) — not supported by sshj", msg.cols(), msg.rows());
             }
             case "PING" -> sendMessage(wsSession, new TerminalOutput("PONG", ""));
@@ -211,10 +224,15 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        // For deployment sessions: detach WebSocket but keep SSH session alive
+        // Deployment sessions: detach WebSocket, keep SSH alive, start background buffer reader
         if (terminalSession.isDeploymentSession()) {
             deploymentWsSessions.remove(terminalSession.getSessionId());
-            log.info("Deployment terminal WebSocket detached for session {} (SSH stays alive)",
+            if (!terminalSession.isScriptCompleted()) {
+                // Start a background thread to keep buffering SSH output for reconnection
+                Thread.ofVirtual().name("deploy-bg-" + terminalSession.getSessionId()).start(() ->
+                        backgroundBuffer(terminalSession));
+            }
+            log.info("Deployment terminal detached for session {} (SSH stays alive)",
                     terminalSession.getSessionId());
             return;
         }
@@ -245,7 +263,6 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         TerminalSession terminalSession = wsSessionMap.remove(wsSession.getId());
         if (terminalSession != null) {
             if (terminalSession.isDeploymentSession()) {
-                // Just detach, don't kill the SSH session
                 deploymentWsSessions.remove(terminalSession.getSessionId());
             } else {
                 terminalSessionService.removeSession(terminalSession.getSessionId());
@@ -256,6 +273,8 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             }
         }
     }
+
+    // ── Regular terminal: direct SSH stream → WebSocket ──
 
     private void streamOutput(WebSocketSession wsSession, TerminalSession terminalSession) {
         try {
@@ -279,33 +298,76 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private void streamDeploymentOutput(TerminalSession terminalSession) {
-        // The InteractiveDeploymentService's monitor thread handles reading from the SSH stream
-        // and buffering output. This method streams buffered output to the attached WebSocket.
-        // We poll for new output since the monitor thread is the primary reader.
-        String lastSent = terminalSession.getBufferedOutput();
+    // ── Deployment terminal: direct SSH stream → WebSocket + buffer ──
 
-        while (!terminalSession.isScriptCompleted() && terminalSession.getSshSession().isConnected()) {
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
+    private void streamDeploymentOutput(WebSocketSession wsSession, TerminalSession terminalSession) {
+        try {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            InputStream in = terminalSession.getSshSession().getInputStream();
+            while ((bytesRead = in.read(buffer)) != -1) {
+                String output = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
+                terminalSession.appendToBuffer(output);
 
-            String currentBuffer = terminalSession.getBufferedOutput();
-            if (currentBuffer.length() > lastSent.length()) {
-                String newOutput = currentBuffer.substring(lastSent.length());
-                lastSent = currentBuffer;
-
+                // Send to attached WebSocket if still open
                 WebSocketSession ws = deploymentWsSessions.get(terminalSession.getSessionId());
                 if (ws != null && ws.isOpen()) {
-                    sendMessage(ws, new TerminalOutput("OUTPUT", newOutput));
+                    sendMessage(ws, new TerminalOutput("OUTPUT", output));
+                }
+
+                // If WebSocket disconnected, keep reading into buffer (background mode)
+                // A new streamDeploymentOutput will be started on reconnection
+                if (ws == null || !ws.isOpen()) {
+                    // Continue buffering without a WebSocket
+                    backgroundBuffer(terminalSession);
+                    return;
                 }
             }
+        } catch (IOException e) {
+            log.debug("SSH stream ended for deployment session {}", terminalSession.getSessionId());
         }
 
-        // Script completed — notify attached WebSocket
+        // Stream ended — script completed
+        handleDeploymentCompletion(terminalSession);
+    }
+
+    // ── Background buffer: reads SSH output when no WebSocket is attached ──
+
+    private void backgroundBuffer(TerminalSession terminalSession) {
+        try {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            InputStream in = terminalSession.getSshSession().getInputStream();
+            while ((bytesRead = in.read(buffer)) != -1) {
+                String output = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
+                terminalSession.appendToBuffer(output);
+
+                // If a WebSocket reconnected, hand off to streamDeploymentOutput
+                WebSocketSession ws = deploymentWsSessions.get(terminalSession.getSessionId());
+                if (ws != null && ws.isOpen()) {
+                    // WebSocket reconnected — replay what we buffered since disconnect,
+                    // then continue as direct stream
+                    return; // The reconnection handler starts a new streamDeploymentOutput
+                }
+            }
+        } catch (IOException e) {
+            log.debug("SSH stream ended during background buffering for session {}",
+                    terminalSession.getSessionId());
+        }
+
+        handleDeploymentCompletion(terminalSession);
+    }
+
+    private void handleDeploymentCompletion(TerminalSession terminalSession) {
+        if (terminalSession.isScriptCompleted()) return; // already handled
+
+        terminalSession.setScriptCompleted(true);
+        String logs = terminalSession.getBufferedOutput();
+
+        // Update job in database
+        interactiveDeploymentService.completeJob(terminalSession.getDeploymentJobId(), logs);
+
+        // Notify attached WebSocket
         WebSocketSession ws = deploymentWsSessions.get(terminalSession.getSessionId());
         if (ws != null && ws.isOpen()) {
             sendMessage(ws, new TerminalOutput("DEPLOYMENT_COMPLETE", "Script has finished"));
