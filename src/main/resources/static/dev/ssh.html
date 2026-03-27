@@ -7,7 +7,8 @@
     <link rel="stylesheet" href="common.css">
     <style>
         .ssh-layout { display: grid; grid-template-columns: 260px 1fr; gap: 0; height: calc(100vh - 80px); }
-        @media (max-width: 768px) { .ssh-layout { grid-template-columns: 1fr; height: auto; } }
+        .ssh-layout.files-open { grid-template-columns: 260px 1fr 300px; }
+        @media (max-width: 768px) { .ssh-layout, .ssh-layout.files-open { grid-template-columns: 1fr; height: auto; } }
 
         /* Sidebar */
         .sidebar {
@@ -80,6 +81,65 @@
             background: #21262d; border: 1px solid #30363d; border-radius: 3px;
             padding: 1px 4px; font-family: inherit; font-size: 10px; color: #8b949e;
         }
+
+        /* File browser panel */
+        .file-panel {
+            background: var(--surface); border-left: 1px solid var(--border);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .file-panel-header {
+            display: flex; align-items: center; gap: 8px;
+            padding: 10px 12px; border-bottom: 1px solid var(--border);
+            min-height: 44px;
+        }
+        .file-panel-header span { font-size: 13px; font-weight: 600; }
+        .file-panel-close {
+            margin-left: auto; background: none; border: none; color: var(--text-muted);
+            cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: 4px;
+        }
+        .file-panel-close:hover { background: var(--surface-hover); color: var(--text); }
+
+        .file-breadcrumb {
+            display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+            padding: 6px 12px; border-bottom: 1px solid var(--border);
+            font-size: 11px; font-family: var(--mono); color: var(--text-muted);
+            background: var(--bg); min-height: 30px;
+        }
+        .file-breadcrumb-seg {
+            background: none; border: none; color: var(--primary); cursor: pointer;
+            font-family: var(--mono); font-size: 11px; padding: 1px 3px; border-radius: 3px;
+        }
+        .file-breadcrumb-seg:hover { background: var(--surface-hover); }
+        .file-breadcrumb-sep { color: var(--text-muted); opacity: 0.4; }
+
+        .file-list { flex: 1; overflow-y: auto; }
+        .file-list-loading { padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px; }
+
+        .file-item {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 12px; cursor: pointer; transition: background 0.1s;
+            border-bottom: 1px solid rgba(46, 51, 69, 0.4);
+            font-size: 13px;
+        }
+        .file-item:hover { background: var(--surface-hover); }
+        .file-item-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; opacity: 0.7; }
+        .file-item-icon.dir { color: var(--primary); }
+        .file-item-icon.file { color: var(--text-muted); }
+        .file-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-item-name.dir { color: var(--text); font-weight: 500; }
+        .file-item-name.file { color: var(--text-muted); }
+        .file-item-size { font-size: 11px; color: var(--text-muted); font-family: var(--mono); flex-shrink: 0; }
+        .file-item-parent { color: var(--text-muted); font-style: italic; }
+
+        .file-actions {
+            display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border);
+            background: var(--surface); font-size: 11px;
+        }
+        .file-actions button {
+            background: none; border: 1px solid var(--border); color: var(--text-muted);
+            padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: var(--font);
+        }
+        .file-actions button:hover { background: var(--surface-hover); color: var(--text); }
     </style>
 </head>
 <body>
@@ -88,7 +148,7 @@
 
     <div id="header"></div>
 
-    <div class="ssh-layout">
+    <div class="ssh-layout" id="sshLayout">
         <!-- Sidebar: Server list -->
         <div class="sidebar">
             <div class="sidebar-header">Servers</div>
@@ -104,6 +164,7 @@
                 <span id="termServerHost" class="term-topbar-host"></span>
                 <span style="flex:1;"></span>
                 <span id="termStatus" class="terminal-status disconnected">Disconnected</span>
+                <button class="btn btn-ghost btn-sm" id="filesToggleBtn" onclick="toggleFilePanel()" style="display:none;">Files</button>
                 <button class="btn btn-primary btn-sm" id="termConnectBtn" onclick="termConnect()" disabled>Connect</button>
                 <button class="btn btn-ghost btn-sm" id="termDisconnectBtn" onclick="termDisconnect()" style="display:none;">Disconnect</button>
             </div>
@@ -122,6 +183,23 @@
                 <span>Right-click to paste</span>
                 <span>|</span>
                 <span><kbd>Ctrl+C</kbd> (no selection) sends SIGINT</span>
+            </div>
+        </div>
+
+        <!-- File Browser Panel (hidden by default) -->
+        <div class="file-panel" id="filePanel" style="display:none;">
+            <div class="file-panel-header">
+                <span>File Browser</span>
+                <button class="file-panel-close" onclick="toggleFilePanel()" title="Close">&times;</button>
+            </div>
+            <div class="file-breadcrumb" id="fileBreadcrumb">/</div>
+            <div class="file-list" id="fileList">
+                <div class="file-list-loading">Select a server to browse files</div>
+            </div>
+            <div class="file-actions">
+                <button onclick="refreshFiles()">Refresh</button>
+                <button onclick="goHome()">Home (~)</button>
+                <button onclick="navigateTo('/')">Root (/)</button>
             </div>
         </div>
     </div>
@@ -148,15 +226,10 @@
         };
 
         function ansiToHtml(text) {
-            // Strip OSC sequences (title setting, etc): ESC ] ... BEL/ST
             text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-            // Strip private mode sequences: ESC [ ? number h/l
             text = text.replace(/\x1b\[\?[0-9;]*[hl]/g, '');
-            // Strip cursor movement/erase sequences we don't handle
             text = text.replace(/\x1b\[[0-9;]*[ABCDJKHG]/g, '');
-            // Strip erase in line/display
             text = text.replace(/\x1b\[[0-9;]*[mK]/g, function(match) {
-                // Keep SGR (m) sequences, strip K sequences
                 if (match.endsWith('K')) return '';
                 return match;
             });
@@ -186,7 +259,6 @@
             }
 
             while (i < text.length) {
-                // ESC [ ... m (SGR sequence)
                 if (text[i] === '\x1b' && text[i + 1] === '[') {
                     let j = i + 2;
                     while (j < text.length && text[j] !== 'm' && j - i < 20) j++;
@@ -207,7 +279,7 @@
                             else if (code === 49) bg = null;
                             else if (ANSI_COLORS[code]) fg = ANSI_COLORS[code];
                             else if (ANSI_BG_COLORS[code]) bg = ANSI_BG_COLORS[code];
-                            else if (code === 38 && params[p + 1] === 5) { p += 2; /* skip 256-color */ }
+                            else if (code === 38 && params[p + 1] === 5) { p += 2; }
                             else if (code === 48 && params[p + 1] === 5) { p += 2; }
                         }
                         openSpan();
@@ -215,17 +287,8 @@
                         continue;
                     }
                 }
-                // Skip any remaining ESC sequences we missed
-                if (text[i] === '\x1b') {
-                    i++;
-                    continue;
-                }
-                // Carriage return: skip (newlines handle line breaks)
-                if (text[i] === '\r') {
-                    i++;
-                    continue;
-                }
-                // HTML-escape printable characters
+                if (text[i] === '\x1b') { i++; continue; }
+                if (text[i] === '\r') { i++; continue; }
                 if (text[i] === '<') result += '&lt;';
                 else if (text[i] === '>') result += '&gt;';
                 else if (text[i] === '&') result += '&amp;';
@@ -275,6 +338,13 @@
             document.getElementById('termServerName').style.color = '';
             document.getElementById('termServerHost').textContent = selectedServer ? (selectedServer.hostname || selectedServer.ipAddress) : '';
             document.getElementById('termConnectBtn').disabled = false;
+            document.getElementById('filesToggleBtn').style.display = '';
+
+            // Reset file browser when switching servers
+            currentFilePath = '~';
+            if (filePanelOpen) {
+                loadFiles('~');
+            }
         }
 
         // ── Terminal ───────────────────────────────────
@@ -376,11 +446,10 @@
             document.getElementById('termDisconnectBtn').style.display = 'none';
         }
 
-        // ── Keyboard: Ctrl+C copies if selection, else sends SIGINT ──
+        // ── Keyboard ──────────────────────────────────
         document.getElementById('terminalDisplay').addEventListener('keydown', (e) => {
             if (!termConnected || !ws) return;
 
-            // Ctrl+C: copy if text selected, otherwise send SIGINT
             if (e.ctrlKey && e.key === 'c') {
                 const selection = window.getSelection().toString();
                 if (selection) {
@@ -393,7 +462,6 @@
                 return;
             }
 
-            // Ctrl+V: let browser handle paste (handled by paste event)
             if (e.ctrlKey && e.key === 'v') return;
 
             e.preventDefault();
@@ -427,7 +495,6 @@
             }
         });
 
-        // Paste via Ctrl+V
         document.getElementById('terminalDisplay').addEventListener('paste', (e) => {
             if (!termConnected || !ws) return;
             e.preventDefault();
@@ -437,7 +504,6 @@
             }
         });
 
-        // Right-click paste
         document.getElementById('terminalDisplay').addEventListener('contextmenu', (e) => {
             if (!termConnected || !ws) return;
             e.preventDefault();
@@ -448,10 +514,147 @@
             }).catch(() => {});
         });
 
-        // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             if (ws) ws.close();
         });
+
+        // ── File Browser ──────────────────────────────
+        let filePanelOpen = false;
+        let currentFilePath = '~';
+
+        function toggleFilePanel() {
+            filePanelOpen = !filePanelOpen;
+            const layout = document.getElementById('sshLayout');
+            const panel = document.getElementById('filePanel');
+            const btn = document.getElementById('filesToggleBtn');
+
+            if (filePanelOpen) {
+                layout.classList.add('files-open');
+                panel.style.display = '';
+                btn.classList.remove('btn-ghost');
+                btn.classList.add('btn-primary');
+                if (selectedServerId) loadFiles(currentFilePath);
+            } else {
+                layout.classList.remove('files-open');
+                panel.style.display = 'none';
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-ghost');
+            }
+        }
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' K';
+            if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' M';
+            return (bytes / 1073741824).toFixed(1) + ' G';
+        }
+
+        function fileIcon(name, isDir) {
+            if (isDir) return '\u{1F4C1}';
+            const ext = name.split('.').pop().toLowerCase();
+            if (['sh', 'bash'].includes(ext)) return '\u{1F4DC}';
+            if (['conf', 'cfg', 'ini', 'yaml', 'yml', 'json', 'toml', 'xml', 'env'].includes(ext)) return '\u{2699}';
+            if (['log', 'txt', 'md', 'rst'].includes(ext)) return '\u{1F4C4}';
+            if (['tar', 'gz', 'zip', 'bz2', 'xz', 'deb', 'rpm'].includes(ext)) return '\u{1F4E6}';
+            if (['key', 'pem', 'crt', 'cert'].includes(ext)) return '\u{1F512}';
+            return '\u{1F4C4}';
+        }
+
+        function renderBreadcrumb(path) {
+            const el = document.getElementById('fileBreadcrumb');
+            if (path === '~' || path === '') {
+                el.innerHTML = '<button class="file-breadcrumb-seg" onclick="navigateTo(\'~\')">~</button>';
+                return;
+            }
+            const parts = path.split('/').filter(Boolean);
+            let html = '<button class="file-breadcrumb-seg" onclick="navigateTo(\'/\')">/</button>';
+            let accumulated = '';
+            for (let i = 0; i < parts.length; i++) {
+                accumulated += '/' + parts[i];
+                const p = accumulated;
+                html += `<span class="file-breadcrumb-sep">/</span>`;
+                html += `<button class="file-breadcrumb-seg" onclick="navigateTo('${esc(p)}')">${esc(parts[i])}</button>`;
+            }
+            el.innerHTML = html;
+        }
+
+        async function loadFiles(path) {
+            if (!selectedServerId) return;
+            currentFilePath = path;
+            renderBreadcrumb(path);
+
+            const listEl = document.getElementById('fileList');
+            listEl.innerHTML = '<div class="file-list-loading">Loading...</div>';
+
+            try {
+                const encodedPath = encodeURIComponent(path);
+                const res = await apiFetch(`/servers/${selectedServerId}/sftp/ls?path=${encodedPath}`);
+                if (!res.ok) {
+                    const err = await res.json();
+                    listEl.innerHTML = `<div class="file-list-loading" style="color:var(--danger);">${esc(err.message || 'Failed to list directory')}</div>`;
+                    return;
+                }
+                const files = await res.json();
+
+                let html = '';
+
+                // Parent directory link
+                if (path !== '/' && path !== '~') {
+                    const parent = path.substring(0, path.lastIndexOf('/')) || '/';
+                    html += `<div class="file-item" onclick="navigateTo('${esc(parent)}')">
+                        <span class="file-item-icon dir">\u{2B06}</span>
+                        <span class="file-item-name file-item-parent">..</span>
+                        <span class="file-item-size"></span>
+                    </div>`;
+                }
+
+                if (files.length === 0) {
+                    html += '<div class="file-list-loading">Empty directory</div>';
+                } else {
+                    for (const f of files) {
+                        if (f.name === '.' || f.name === '..') continue;
+                        const icon = fileIcon(f.name, f.directory);
+                        const typeClass = f.directory ? 'dir' : 'file';
+                        const size = f.directory ? '' : formatSize(f.size);
+                        const onclick = f.directory
+                            ? `onclick="navigateTo('${esc(f.path)}')"`
+                            : `onclick="cdToFile('${esc(f.path)}')"`;
+                        html += `<div class="file-item" ${onclick}>
+                            <span class="file-item-icon ${typeClass}">${icon}</span>
+                            <span class="file-item-name ${typeClass}">${esc(f.name)}</span>
+                            <span class="file-item-size">${size}</span>
+                        </div>`;
+                    }
+                }
+
+                listEl.innerHTML = html;
+            } catch (e) {
+                listEl.innerHTML = `<div class="file-list-loading" style="color:var(--danger);">${esc(e.message)}</div>`;
+            }
+        }
+
+        function navigateTo(path) {
+            loadFiles(path);
+        }
+
+        function refreshFiles() {
+            loadFiles(currentFilePath);
+        }
+
+        function goHome() {
+            loadFiles('~');
+        }
+
+        // Click on a file: cd to its directory in the terminal and optionally cat it
+        function cdToFile(filePath) {
+            if (!termConnected || !ws) return;
+            const dir = filePath.substring(0, filePath.lastIndexOf('/')) || '/';
+            const name = filePath.substring(filePath.lastIndexOf('/') + 1);
+            // Send cd + ls to the terminal
+            ws.send(JSON.stringify({ type: 'INPUT', data: `cd ${dir} && ls -la ${name}\r` }));
+            document.getElementById('terminalDisplay').focus();
+        }
 
         // ── Utils ──────────────────────────────────────
         function esc(str) {

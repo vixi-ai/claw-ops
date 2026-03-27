@@ -9,6 +9,8 @@ import com.openclaw.manager.openclawserversmanager.servers.dto.UpdateServerReque
 import com.openclaw.manager.openclawserversmanager.servers.service.ServerService;
 import com.openclaw.manager.openclawserversmanager.ssh.dto.CommandResponse;
 import com.openclaw.manager.openclawserversmanager.ssh.dto.ExecuteCommandRequest;
+import com.openclaw.manager.openclawserversmanager.ssh.service.FileEntry;
+import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
 import com.openclaw.manager.openclawserversmanager.terminal.service.TerminalSessionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -27,8 +29,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -38,13 +42,16 @@ import java.util.UUID;
 public class ServerController {
 
     private final ServerService serverService;
+    private final SshService sshService;
     private final TerminalSessionService terminalSessionService;
     private final AuditService auditService;
 
     public ServerController(ServerService serverService,
+                            SshService sshService,
                             TerminalSessionService terminalSessionService,
                             AuditService auditService) {
         this.serverService = serverService;
+        this.sshService = sshService;
         this.terminalSessionService = terminalSessionService;
         this.auditService = auditService;
     }
@@ -101,6 +108,15 @@ public class ServerController {
                                                           Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
         return ResponseEntity.ok(serverService.executeCommand(id, request.command(), request.timeoutSeconds(), userId));
+    }
+
+    @GetMapping("/{id}/sftp/ls")
+    @Operation(summary = "List files and directories on a remote server via SFTP")
+    public ResponseEntity<List<FileEntry>> listDirectory(@PathVariable UUID id,
+                                                          @RequestParam(defaultValue = "/") String path,
+                                                          Authentication authentication) {
+        var server = serverService.getServerEntity(id);
+        return ResponseEntity.ok(sshService.listDirectory(server, path));
     }
 
     @GetMapping("/{id}/ssh/session-token")
