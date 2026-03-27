@@ -43,6 +43,8 @@ public final class DeploymentMapper {
                 job.getFinishedAt(),
                 job.getLogs(),
                 job.getErrorMessage(),
+                job.isInteractive(),
+                job.getTerminalSessionId(),
                 job.getCreatedAt()
         );
     }

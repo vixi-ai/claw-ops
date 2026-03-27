@@ -13,4 +13,5 @@ public interface DeploymentJobRepository extends JpaRepository<DeploymentJob, UU
     Page<DeploymentJob> findByServerId(UUID serverId, Pageable pageable);
     Page<DeploymentJob> findByStatus(DeploymentStatus status, Pageable pageable);
     Page<DeploymentJob> findByServerIdAndStatus(UUID serverId, DeploymentStatus status, Pageable pageable);
+    java.util.List<DeploymentJob> findByInteractiveAndStatus(boolean interactive, DeploymentStatus status);
 }

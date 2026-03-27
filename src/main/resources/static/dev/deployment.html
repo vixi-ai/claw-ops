@@ -21,6 +21,43 @@
         .log-pre { background: #1a1a2e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
         .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; }
         .filter-bar select { font-size: 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
+
+        /* Terminal modal */
+        .terminal-modal .modal { max-width: 900px; width: 90vw; }
+        .terminal-modal .modal-body { padding: 0; }
+        .term-topbar {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 16px; border-bottom: 1px solid #21262d;
+            background: #161b22; min-height: 36px;
+        }
+        .term-topbar-label { font-size: 12px; font-weight: 600; color: #c9d1d9; }
+        .terminal-status {
+            font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .terminal-status.disconnected { background: #374151; color: #9ca3af; }
+        .terminal-status.connecting { background: #fef3c7; color: #92400e; }
+        .terminal-status.connected { background: #d1fae5; color: #065f46; }
+        .terminal-status.completed { background: #d1fae5; color: #065f46; }
+        .terminal-status.failed { background: #fee2e2; color: #991b1b; }
+        #deployTermDisplay {
+            height: 450px; overflow-y: auto; padding: 12px 16px; background: #0d1117;
+            font-family: 'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
+            font-size: 13px; line-height: 1.5; color: #c9d1d9;
+            white-space: pre-wrap; word-break: break-all;
+            outline: none; cursor: text;
+            -webkit-user-select: text; user-select: text;
+        }
+        #deployTermDisplay::selection { background: #264f78; color: #fff; }
+        .term-bottombar {
+            display: flex; align-items: center; gap: 12px;
+            padding: 6px 16px; border-top: 1px solid #21262d;
+            background: #161b22; font-size: 11px; color: #484f58;
+        }
+        .term-bottombar kbd {
+            background: #21262d; border: 1px solid #30363d; border-radius: 3px;
+            padding: 1px 4px; font-family: inherit; font-size: 10px; color: #8b949e;
+        }
     </style>
 </head>
 <body>
@@ -126,6 +163,13 @@
                     <label class="field-label">Target Server <span class="req">*</span></label>
                     <select id="runServerSelect" class="form-control"></select>
                 </div>
+                <div class="form-group" style="margin-top:8px;">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+                        <input type="checkbox" id="runInteractive" checked>
+                        Interactive (open terminal for input)
+                    </label>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Uncheck for scripts that run without any user input.</div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="closeModal('runModal')">Cancel</button>
@@ -152,12 +196,123 @@
         </div>
     </div>
 
+    <!-- Interactive Terminal Modal -->
+    <div class="modal-overlay terminal-modal" id="terminalModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="termModalTitle">Interactive Terminal</h3>
+            </div>
+            <div class="modal-body">
+                <div class="term-topbar">
+                    <span class="term-topbar-label" id="termJobLabel">-</span>
+                    <span style="flex:1;"></span>
+                    <span id="termStatus" class="terminal-status disconnected">Disconnected</span>
+                </div>
+                <div id="deployTermDisplay" tabindex="0"></div>
+                <div class="term-bottombar">
+                    <span><kbd>Ctrl+C</kbd> copies selection or sends SIGINT</span>
+                    <span>|</span>
+                    <span>Right-click to paste</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" style="color:var(--danger)" id="termStopBtn" onclick="stopCurrentJob()">Stop Script</button>
+                <span style="flex:1"></span>
+                <button class="btn btn-ghost" onclick="closeTerminal()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         document.getElementById('header').innerHTML = headerHTML('Deployments');
 
         let servers = [];
         let autoRefreshTimer = null;
+        let deployWs = null;
+        let deployConnected = false;
+        let currentDeployJobId = null;
 
+        // ── ANSI Parser (from ssh.html) ──────────────────
+        const ANSI_COLORS = {
+            30: '#484f58', 31: '#ff7b72', 32: '#7ee787', 33: '#d29922',
+            34: '#79c0ff', 35: '#d2a8ff', 36: '#a5d6ff', 37: '#c9d1d9',
+            90: '#6e7681', 91: '#ffa198', 92: '#56d364', 93: '#e3b341',
+            94: '#79c0ff', 95: '#d2a8ff', 96: '#a5d6ff', 97: '#f0f6fc'
+        };
+        const ANSI_BG_COLORS = {
+            40: '#484f58', 41: '#ff7b72', 42: '#7ee787', 43: '#d29922',
+            44: '#79c0ff', 45: '#d2a8ff', 46: '#a5d6ff', 47: '#c9d1d9',
+            100: '#6e7681', 101: '#ffa198', 102: '#56d364', 103: '#e3b341',
+            104: '#79c0ff', 105: '#d2a8ff', 106: '#a5d6ff', 107: '#f0f6fc'
+        };
+
+        function ansiToHtml(text) {
+            text = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+            text = text.replace(/\x1b\[\?[0-9;]*[hl]/g, '');
+            text = text.replace(/\x1b\[[0-9;]*[ABCDJKHG]/g, '');
+            text = text.replace(/\x1b\[[0-9;]*[mK]/g, function(match) {
+                if (match.endsWith('K')) return '';
+                return match;
+            });
+            let result = '';
+            let bold = false, dim = false, italic = false, underline = false;
+            let fg = null, bg = null;
+            let i = 0, spanOpen = false;
+
+            function openSpan() {
+                let styles = [];
+                if (bold) styles.push('font-weight:bold');
+                if (dim) styles.push('opacity:0.6');
+                if (italic) styles.push('font-style:italic');
+                if (underline) styles.push('text-decoration:underline');
+                if (fg) styles.push('color:' + fg);
+                if (bg) styles.push('background:' + bg);
+                if (styles.length) { result += '<span style="' + styles.join(';') + '">'; spanOpen = true; }
+            }
+            function closeSpan() { if (spanOpen) { result += '</span>'; spanOpen = false; } }
+
+            while (i < text.length) {
+                if (text[i] === '\x1b' && text[i + 1] === '[') {
+                    let j = i + 2;
+                    while (j < text.length && text[j] !== 'm' && j - i < 20) j++;
+                    if (j < text.length && text[j] === 'm') {
+                        closeSpan();
+                        const params = text.substring(i + 2, j).split(';').map(Number);
+                        for (let p = 0; p < params.length; p++) {
+                            const code = params[p] || 0;
+                            if (code === 0) { bold = dim = italic = underline = false; fg = bg = null; }
+                            else if (code === 1) bold = true;
+                            else if (code === 2) dim = true;
+                            else if (code === 3) italic = true;
+                            else if (code === 4) underline = true;
+                            else if (code === 22) { bold = false; dim = false; }
+                            else if (code === 23) italic = false;
+                            else if (code === 24) underline = false;
+                            else if (code === 39) fg = null;
+                            else if (code === 49) bg = null;
+                            else if (ANSI_COLORS[code]) fg = ANSI_COLORS[code];
+                            else if (ANSI_BG_COLORS[code]) bg = ANSI_BG_COLORS[code];
+                            else if (code === 38 && params[p + 1] === 5) { p += 2; }
+                            else if (code === 48 && params[p + 1] === 5) { p += 2; }
+                        }
+                        openSpan();
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                if (text[i] === '\x1b') { i++; continue; }
+                if (text[i] === '\r') { i++; continue; }
+                if (text[i] === '<') result += '&lt;';
+                else if (text[i] === '>') result += '&gt;';
+                else if (text[i] === '&') result += '&amp;';
+                else result += text[i];
+                i++;
+            }
+            closeSpan();
+            return result;
+        }
+
+        // ── Servers ──────────────────────────────────────
         async function loadServers() {
             try {
                 const res = await apiFetch('/servers?size=200');
@@ -259,18 +414,187 @@
         async function runScript() {
             const scriptId = document.getElementById('runScriptId').value;
             const serverId = document.getElementById('runServerSelect').value;
+            const interactive = document.getElementById('runInteractive').checked;
             try {
                 const res = await apiFetch('/deployment-jobs', {
                     method: 'POST',
-                    body: JSON.stringify({ scriptId, serverId })
+                    body: JSON.stringify({ scriptId, serverId, interactive })
                 });
                 if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Trigger failed'); }
                 const job = await res.json();
                 closeModal('runModal');
                 showSuccess(`Job triggered (${job.id.substring(0, 8)}...)`);
                 loadJobs();
+
+                // Open interactive terminal only for interactive jobs
+                if (interactive) {
+                    openDeployTerminal(job.id, job.scriptName || 'Script');
+                }
             } catch (e) { showError(e.message); }
         }
+
+        // ─── Interactive Terminal ───
+        async function openDeployTerminal(jobId, label) {
+            currentDeployJobId = jobId;
+            const termEl = document.getElementById('deployTermDisplay');
+            termEl.innerHTML = '';
+            document.getElementById('termJobLabel').textContent = label + ' on ' + serverName(jobId);
+            setDeployTermStatus('connecting');
+            document.getElementById('terminalModal').classList.add('show');
+            termEl.focus();
+
+            try {
+                // Get terminal token
+                const tokenRes = await apiFetch(`/deployment-jobs/${jobId}/terminal-token`, { method: 'POST' });
+                if (!tokenRes.ok) {
+                    const e = await tokenRes.json();
+                    throw new Error(e.message || 'Failed to get terminal token');
+                }
+                const { token } = await tokenRes.json();
+
+                const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${location.host}/ws/terminal?token=${token}&mode=deployment&jobId=${jobId}`;
+                deployWs = new WebSocket(wsUrl);
+
+                deployWs.onopen = () => {
+                    deployConnected = true;
+                    setDeployTermStatus('connected');
+                    termEl.focus();
+                };
+
+                deployWs.onmessage = (event) => {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'OUTPUT') {
+                        termEl.innerHTML += ansiToHtml(msg.data);
+                        termEl.scrollTop = termEl.scrollHeight;
+                    } else if (msg.type === 'ERROR') {
+                        termEl.innerHTML += '<span style="color:#ff7b72">[ERROR] ' + esc(msg.data) + '</span>\n';
+                        termEl.scrollTop = termEl.scrollHeight;
+                    } else if (msg.type === 'DEPLOYMENT_COMPLETE') {
+                        termEl.innerHTML += '<span style="color:#7ee787">\n--- Script completed ---\n</span>';
+                        termEl.scrollTop = termEl.scrollHeight;
+                        setDeployTermStatus('completed');
+                        deployConnected = false;
+                        loadJobs();
+                    } else if (msg.type === 'CLOSED') {
+                        termEl.innerHTML += '<span style="color:#6e7681">\n--- Session ended ---\n</span>';
+                        termEl.scrollTop = termEl.scrollHeight;
+                        setDeployTermStatus('disconnected');
+                        deployConnected = false;
+                        loadJobs();
+                    }
+                };
+
+                deployWs.onclose = () => {
+                    if (deployConnected) {
+                        setDeployTermStatus('disconnected');
+                        deployConnected = false;
+                    }
+                };
+
+                deployWs.onerror = () => {
+                    termEl.innerHTML += '<span style="color:#ff7b72">\n--- Connection error ---\n</span>';
+                    setDeployTermStatus('disconnected');
+                    deployConnected = false;
+                };
+
+            } catch (err) {
+                showError(err.message);
+                setDeployTermStatus('disconnected');
+            }
+        }
+
+        function setDeployTermStatus(status) {
+            const el = document.getElementById('termStatus');
+            el.className = 'terminal-status ' + status;
+            const labels = { disconnected: 'Disconnected', connecting: 'Connecting...', connected: 'Connected', completed: 'Completed', failed: 'Failed' };
+            el.textContent = labels[status] || status;
+        }
+
+        async function stopCurrentJob() {
+            if (!currentDeployJobId) return;
+            if (!confirm('Stop the running script? This will kill the process.')) return;
+            try {
+                const res = await apiFetch(`/deployment-jobs/${currentDeployJobId}/stop`, { method: 'POST' });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Stop failed'); }
+                showSuccess('Job stopped');
+                if (deployWs) { deployWs.close(); deployWs = null; }
+                deployConnected = false;
+                setDeployTermStatus('disconnected');
+                const termEl = document.getElementById('deployTermDisplay');
+                termEl.innerHTML += '<span style="color:#ffa198">\n--- Stopped by user ---\n</span>';
+                termEl.scrollTop = termEl.scrollHeight;
+                loadJobs();
+            } catch (e) { showError(e.message); }
+        }
+
+        function closeTerminal() {
+            if (deployWs) { deployWs.close(); deployWs = null; }
+            deployConnected = false;
+            currentDeployJobId = null;
+            document.getElementById('terminalModal').classList.remove('show');
+        }
+
+        // Resume an interactive job
+        async function resumeJob(jobId, scriptName) {
+            openDeployTerminal(jobId, scriptName || 'Script');
+        }
+
+        // ── Terminal keyboard handler ──
+        document.getElementById('deployTermDisplay').addEventListener('keydown', (e) => {
+            if (!deployConnected || !deployWs) return;
+
+            if (e.ctrlKey && e.key === 'c') {
+                const selection = window.getSelection().toString();
+                if (selection) { document.execCommand('copy'); window.getSelection().removeAllRanges(); return; }
+                e.preventDefault();
+                deployWs.send(JSON.stringify({ type: 'INPUT', data: '\x03' }));
+                return;
+            }
+            if (e.ctrlKey && e.key === 'v') return;
+
+            e.preventDefault();
+            let data = '';
+            if (e.ctrlKey && e.key === 'd') { data = '\x04'; }
+            else if (e.ctrlKey && e.key === 'l') { data = '\x0c'; }
+            else if (e.ctrlKey && e.key === 'z') { data = '\x1a'; }
+            else if (e.ctrlKey && e.key === 'a') { data = '\x01'; }
+            else if (e.ctrlKey && e.key === 'e') { data = '\x05'; }
+            else if (e.ctrlKey && e.key === 'u') { data = '\x15'; }
+            else if (e.ctrlKey && e.key === 'k') { data = '\x0b'; }
+            else if (e.ctrlKey && e.key === 'w') { data = '\x17'; }
+            else if (e.key === 'Enter') { data = '\r'; }
+            else if (e.key === 'Backspace') { data = '\x7f'; }
+            else if (e.key === 'Tab') { data = '\t'; }
+            else if (e.key === 'Escape') { data = '\x1b'; }
+            else if (e.key === 'ArrowUp') { data = '\x1b[A'; }
+            else if (e.key === 'ArrowDown') { data = '\x1b[B'; }
+            else if (e.key === 'ArrowRight') { data = '\x1b[C'; }
+            else if (e.key === 'ArrowLeft') { data = '\x1b[D'; }
+            else if (e.key === 'Home') { data = '\x1b[H'; }
+            else if (e.key === 'End') { data = '\x1b[F'; }
+            else if (e.key === 'Delete') { data = '\x1b[3~'; }
+            else if (e.key === 'PageUp') { data = '\x1b[5~'; }
+            else if (e.key === 'PageDown') { data = '\x1b[6~'; }
+            else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) { data = e.key; }
+
+            if (data) deployWs.send(JSON.stringify({ type: 'INPUT', data: data }));
+        });
+
+        document.getElementById('deployTermDisplay').addEventListener('paste', (e) => {
+            if (!deployConnected || !deployWs) return;
+            e.preventDefault();
+            const text = e.clipboardData.getData('text');
+            if (text) deployWs.send(JSON.stringify({ type: 'INPUT', data: text }));
+        });
+
+        document.getElementById('deployTermDisplay').addEventListener('contextmenu', (e) => {
+            if (!deployConnected || !deployWs) return;
+            e.preventDefault();
+            navigator.clipboard.readText().then(text => {
+                if (text) deployWs.send(JSON.stringify({ type: 'INPUT', data: text }));
+            }).catch(() => {});
+        });
 
         // ─── Jobs ───
         async function loadJobs() {
@@ -289,21 +613,26 @@
                     stopAutoRefresh();
                     return;
                 }
-                document.getElementById('jobsTable').innerHTML = rows.map(j => `
-                    <tr>
+                document.getElementById('jobsTable').innerHTML = rows.map(j => {
+                    let actions = '';
+                    if (j.interactive && j.status === 'RUNNING' && j.terminalSessionId) {
+                        actions += `<button class="btn btn-primary btn-sm" onclick="resumeJob('${j.id}','${esc(j.scriptName || '')}')">Resume</button> `;
+                        actions += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="stopJob('${j.id}','${esc(j.scriptName || '')}')">Stop</button> `;
+                    }
+                    actions += `<button class="btn btn-ghost btn-sm" onclick="viewLogs('${j.id}')">Logs</button>`;
+                    if (j.status === 'PENDING') {
+                        actions += ` <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="cancelJob('${j.id}')">Cancel</button>`;
+                    }
+                    return `<tr>
                         <td>${esc(j.scriptName || '-')}</td>
                         <td>${esc(serverName(j.serverId))}</td>
-                        <td><span class="badge badge-${j.status}">${j.status}</span></td>
+                        <td><span class="badge badge-${j.status}">${j.status}${j.interactive && j.status === 'RUNNING' ? ' (interactive)' : ''}</span></td>
                         <td>${formatDate(j.startedAt)}</td>
                         <td>${duration(j)}</td>
-                        <td>
-                            <button class="btn btn-ghost btn-sm" onclick="viewLogs('${j.id}')">Logs</button>
-                            ${j.status === 'PENDING' ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="cancelJob('${j.id}')">Cancel</button>` : ''}
-                        </td>
-                    </tr>
-                `).join('');
+                        <td>${actions}</td>
+                    </tr>`;
+                }).join('');
 
-                // Auto-refresh if any active jobs
                 const hasActive = rows.some(j => j.status === 'PENDING' || j.status === 'RUNNING');
                 if (hasActive) startAutoRefresh(); else stopAutoRefresh();
             } catch (e) { showError(e.message); }
@@ -331,6 +660,25 @@
                 document.getElementById('logsError').textContent = job.errorMessage || '';
                 document.getElementById('logsContent').textContent = job.logs || '(no output)';
             } catch (e) { document.getElementById('logsContent').textContent = 'Error: ' + e.message; }
+        }
+
+        async function stopJob(id, name) {
+            if (!confirm(`Stop running script "${name || 'this job'}"? This will kill the process.`)) return;
+            try {
+                const res = await apiFetch(`/deployment-jobs/${id}/stop`, { method: 'POST' });
+                if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Stop failed'); }
+                showSuccess('Job stopped');
+                // If terminal modal is open for this job, close the WebSocket
+                if (currentDeployJobId === id) {
+                    if (deployWs) { deployWs.close(); deployWs = null; }
+                    deployConnected = false;
+                    setDeployTermStatus('disconnected');
+                    const termEl = document.getElementById('deployTermDisplay');
+                    termEl.innerHTML += '<span style="color:#ffa198">\n--- Stopped by user ---\n</span>';
+                    termEl.scrollTop = termEl.scrollHeight;
+                }
+                loadJobs();
+            } catch (e) { showError(e.message); }
         }
 
         async function cancelJob(id) {
@@ -364,6 +712,8 @@
             input.value = '';
         }
         function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        window.addEventListener('beforeunload', () => { if (deployWs) deployWs.close(); });
 
         // Init
         loadServers();

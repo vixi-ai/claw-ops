@@ -16,5 +16,7 @@ public record DeploymentJobResponse(
         Instant finishedAt,
         String logs,
         String errorMessage,
+        boolean interactive,
+        String terminalSessionId,
         Instant createdAt
 ) {}

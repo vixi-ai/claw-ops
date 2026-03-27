@@ -36,6 +36,20 @@ public class TerminalSessionService {
         return token;
     }
 
+    public String generateDeploymentToken(UUID serverId, UUID userId, UUID jobId) {
+        String token = UUID.randomUUID().toString();
+        Instant expiresAt = Instant.now().plusSeconds(terminalConfig.getTokenExpirySeconds());
+        pendingTokens.put(token, new SessionTokenInfo(token, userId, serverId, expiresAt, jobId, null));
+        return token;
+    }
+
+    public String generateReconnectionToken(UUID serverId, UUID userId, UUID jobId, String existingSessionId) {
+        String token = UUID.randomUUID().toString();
+        Instant expiresAt = Instant.now().plusSeconds(terminalConfig.getTokenExpirySeconds());
+        pendingTokens.put(token, new SessionTokenInfo(token, userId, serverId, expiresAt, jobId, existingSessionId));
+        return token;
+    }
+
     public SessionTokenInfo validateAndConsumeToken(String token) {
         SessionTokenInfo info = pendingTokens.remove(token);
         if (info == null || info.isExpired()) {
@@ -65,6 +79,19 @@ public class TerminalSessionService {
         return session;
     }
 
+    public TerminalSession getSession(String sessionId) {
+        return activeSessions.get(sessionId);
+    }
+
+    public TerminalSession findSessionByJobId(UUID jobId) {
+        for (TerminalSession session : activeSessions.values()) {
+            if (session.isDeploymentSession() && jobId.equals(session.getDeploymentJobId())) {
+                return session;
+            }
+        }
+        return null;
+    }
+
     public int getActiveSessionCount(UUID userId) {
         return (int) activeSessions.values().stream()
                 .filter(s -> s.getUserId().equals(userId))
@@ -81,6 +108,13 @@ public class TerminalSessionService {
         List<String> toRemove = new ArrayList<>();
         for (Map.Entry<String, TerminalSession> entry : activeSessions.entrySet()) {
             TerminalSession session = entry.getValue();
+
+            // Skip deployment sessions that are still running (SSH connected + script not completed)
+            if (session.isDeploymentSession() && !session.isScriptCompleted()
+                    && session.getSshSession().isConnected()) {
+                continue;
+            }
+
             if (session.getLastActivityAt().isBefore(cutoff) || !session.getSshSession().isConnected()) {
                 toRemove.add(entry.getKey());
             }

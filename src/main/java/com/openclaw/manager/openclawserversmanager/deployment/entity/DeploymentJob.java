@@ -48,6 +48,12 @@ public class DeploymentJob {
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
+    @Column(nullable = false)
+    private boolean interactive = false;
+
+    @Column(name = "terminal_session_id", length = 64)
+    private String terminalSessionId;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
@@ -82,6 +88,12 @@ public class DeploymentJob {
 
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+
+    public boolean isInteractive() { return interactive; }
+    public void setInteractive(boolean interactive) { this.interactive = interactive; }
+
+    public String getTerminalSessionId() { return terminalSessionId; }
+    public void setTerminalSessionId(String terminalSessionId) { this.terminalSessionId = terminalSessionId; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
