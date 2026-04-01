@@ -130,6 +130,13 @@
         .file-item-name.file { color: var(--text-muted); }
         .file-item-size { font-size: 11px; color: var(--text-muted); font-family: var(--mono); flex-shrink: 0; }
         .file-item-parent { color: var(--text-muted); font-style: italic; }
+        .file-item-download {
+            background: none; border: none; color: var(--text-muted); cursor: pointer;
+            font-size: 13px; padding: 2px 4px; border-radius: 3px; flex-shrink: 0;
+            opacity: 0; transition: opacity 0.1s;
+        }
+        .file-item:hover .file-item-download { opacity: 1; }
+        .file-item-download:hover { background: var(--surface-hover); color: var(--primary); }
 
         .file-actions {
             display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border);
@@ -645,10 +652,13 @@
                         const onclick = f.directory
                             ? `onclick="navigateTo('${esc(f.path)}')"`
                             : `onclick="cdToFile('${esc(f.path)}')"`;
+                        const downloadBtn = f.directory ? ''
+                            : `<button class="file-item-download" onclick="event.stopPropagation(); downloadFile('${esc(f.path)}')" title="Download">\u{2B07}</button>`;
                         html += `<div class="file-item" ${onclick}>
                             <span class="file-item-icon ${typeClass}">${icon}</span>
                             <span class="file-item-name ${typeClass}">${esc(f.name)}</span>
                             <span class="file-item-size">${size}</span>
+                            ${downloadBtn}
                         </div>`;
                     }
                 }
@@ -679,6 +689,27 @@
             // Send cd + ls to the terminal
             ws.send(JSON.stringify({ type: 'INPUT', data: `cd ${dir} && ls -la ${name}\r` }));
             document.getElementById('terminalDisplay').focus();
+        }
+
+        function downloadFile(remotePath) {
+            if (!selectedServerId) return;
+            const encodedPath = encodeURIComponent(remotePath);
+            const token = getToken();
+            const url = `${API_BASE}/servers/${selectedServerId}/sftp/download?path=${encodedPath}`;
+            fetch(url, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} })
+                .then(res => {
+                    if (!res.ok) return res.json().then(err => { throw new Error(err.message || 'Download failed'); });
+                    return res.blob();
+                })
+                .then(blob => {
+                    const name = remotePath.substring(remotePath.lastIndexOf('/') + 1);
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = name;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                })
+                .catch(err => showError(err.message));
         }
 
         // ── File Upload (Drag & Drop) ─────────────────

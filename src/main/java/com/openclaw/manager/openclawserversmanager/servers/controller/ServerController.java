@@ -18,7 +18,10 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import java.util.Map;
 import org.springframework.security.core.Authentication;
@@ -136,6 +139,20 @@ public class ServerController {
         String remotePath = path.endsWith("/") ? path + fileName : path + "/" + fileName;
         sshService.uploadFile(server, file.getBytes(), remotePath);
         return ResponseEntity.ok(Map.of("fileName", fileName, "path", remotePath));
+    }
+
+    @GetMapping("/{id}/sftp/download")
+    @Operation(summary = "Download a file from a remote server via SFTP")
+    public ResponseEntity<byte[]> downloadFile(@PathVariable UUID id,
+                                                @RequestParam String path,
+                                                Authentication authentication) {
+        var server = serverService.getServerEntity(id);
+        byte[] content = sshService.downloadFile(server, path);
+        String fileName = path.contains("/") ? path.substring(path.lastIndexOf('/') + 1) : path;
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        headers.setContentDisposition(ContentDisposition.attachment().filename(fileName).build());
+        return new ResponseEntity<>(content, headers, HttpStatus.OK);
     }
 
     @GetMapping("/{id}/ssh/session-token")
