@@ -54,7 +54,13 @@
       "Bash(cat docker-compose*.yml)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(exit\" to the wrapper execution line so the login:*)"
+      "Bash(exit\" to the wrapper execution line so the login:*)",
+      "Bash(find e:Reputeoopenclaw-servers-managersrc -type f -name *.java)",
+      "Bash(netstat -ano)",
+      "Bash(findstr :8080)",
+      "Bash(findstr LISTENING)",
+      "Bash(taskkill //PID 5460 //F)",
+      "Bash(find /e/Reputeo/openclaw-servers-manager/.claude/backlog -name \"*.md\" -exec grep -l \"upload\\\\|download\\\\|sftp\\\\|file\" -i {} \\\\;)"
     ],
     "additionalDirectories": [
       "e:\\Reputeo\\openclaw-servers-manager\\.claude",

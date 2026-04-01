@@ -140,6 +140,27 @@
             padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: var(--font);
         }
         .file-actions button:hover { background: var(--surface-hover); color: var(--text); }
+
+        /* Drag-and-drop upload */
+        .file-list.drag-over {
+            background: rgba(88, 166, 255, 0.08);
+            border: 2px dashed var(--primary);
+            border-radius: 4px;
+        }
+        .upload-status {
+            padding: 6px 12px; font-size: 11px; color: var(--text-muted);
+            border-top: 1px solid var(--border); background: var(--surface);
+            display: none; align-items: center; gap: 8px;
+        }
+        .upload-status.visible { display: flex; }
+        .upload-status .upload-spinner {
+            width: 12px; height: 12px; border: 2px solid var(--border);
+            border-top-color: var(--primary); border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .upload-status.success { color: #7ee787; }
+        .upload-status.error { color: #ff7b72; }
     </style>
 </head>
 <body>
@@ -195,6 +216,10 @@
             <div class="file-breadcrumb" id="fileBreadcrumb">/</div>
             <div class="file-list" id="fileList">
                 <div class="file-list-loading">Select a server to browse files</div>
+            </div>
+            <div class="upload-status" id="uploadStatus">
+                <div class="upload-spinner"></div>
+                <span id="uploadStatusText">Uploading...</span>
             </div>
             <div class="file-actions">
                 <button onclick="refreshFiles()">Refresh</button>
@@ -655,6 +680,78 @@
             ws.send(JSON.stringify({ type: 'INPUT', data: `cd ${dir} && ls -la ${name}\r` }));
             document.getElementById('terminalDisplay').focus();
         }
+
+        // ── File Upload (Drag & Drop) ─────────────────
+        const fileListEl = document.getElementById('fileList');
+        let dragCounter = 0;
+
+        fileListEl.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            dragCounter++;
+            fileListEl.classList.add('drag-over');
+        });
+
+        fileListEl.addEventListener('dragover', (e) => {
+            e.preventDefault();
+        });
+
+        fileListEl.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dragCounter--;
+            if (dragCounter <= 0) {
+                dragCounter = 0;
+                fileListEl.classList.remove('drag-over');
+            }
+        });
+
+        fileListEl.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            dragCounter = 0;
+            fileListEl.classList.remove('drag-over');
+
+            if (!selectedServerId) { showError('Select a server first'); return; }
+            const files = e.dataTransfer.files;
+            if (!files.length) return;
+
+            const statusEl = document.getElementById('uploadStatus');
+            const statusText = document.getElementById('uploadStatusText');
+            statusEl.className = 'upload-status visible';
+            statusText.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}...`;
+
+            let uploaded = 0, failed = 0;
+            for (const file of files) {
+                try {
+                    const form = new FormData();
+                    form.append('file', file);
+                    const encodedPath = encodeURIComponent(currentFilePath);
+                    const token = getToken();
+                    const res = await fetch(`${API_BASE}/servers/${selectedServerId}/sftp/upload?path=${encodedPath}`, {
+                        method: 'POST',
+                        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+                        body: form
+                    });
+                    if (res.ok) { uploaded++; }
+                    else {
+                        failed++;
+                        const err = await res.json();
+                        console.error('Upload failed:', file.name, err.message);
+                    }
+                } catch (err) {
+                    failed++;
+                    console.error('Upload error:', file.name, err);
+                }
+            }
+
+            if (failed === 0) {
+                statusEl.className = 'upload-status visible success';
+                statusText.textContent = `Uploaded ${uploaded} file${uploaded > 1 ? 's' : ''}`;
+            } else {
+                statusEl.className = 'upload-status visible error';
+                statusText.textContent = `${uploaded} uploaded, ${failed} failed`;
+            }
+            setTimeout(() => { statusEl.className = 'upload-status'; }, 3000);
+            refreshFiles();
+        });
 
         // ── Utils ──────────────────────────────────────
         function esc(str) {

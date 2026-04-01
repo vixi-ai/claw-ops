@@ -25,6 +25,9 @@ public class SecurityConfig {
     @Value("${springdoc.swagger-ui.enabled:true}")
     private boolean swaggerEnabled;
 
+    @Value("${dev.panel.enabled:true}")
+    private boolean devPanelEnabled;
+
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           CorsConfigurationSource corsConfigurationSource) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
@@ -61,8 +64,12 @@ public class SecurityConfig {
                                     "/v3/api-docs"
                             ).permitAll();
                         }
-                        // Dev admin pages (static resources)
-                        auth.requestMatchers("/dev/**").permitAll();
+                        // Dev admin pages (static resources) — disabled in prod
+                        if (devPanelEnabled) {
+                            auth.requestMatchers("/dev/**").permitAll();
+                        } else {
+                            auth.requestMatchers("/dev/**").denyAll();
+                        }
                         // WebSocket (auth handled by handshake interceptor)
                         auth.requestMatchers("/ws/**").permitAll();
                         // ADMIN only

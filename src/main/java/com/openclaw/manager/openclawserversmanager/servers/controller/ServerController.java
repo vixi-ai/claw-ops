@@ -31,6 +31,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
 
 import java.util.List;
 import java.util.UUID;
@@ -117,6 +120,22 @@ public class ServerController {
                                                           Authentication authentication) {
         var server = serverService.getServerEntity(id);
         return ResponseEntity.ok(sshService.listDirectory(server, path));
+    }
+
+    @PostMapping("/{id}/sftp/upload")
+    @Operation(summary = "Upload a file to a remote server via SFTP")
+    public ResponseEntity<Map<String, String>> uploadFile(@PathVariable UUID id,
+                                                          @RequestParam String path,
+                                                          @RequestParam("file") MultipartFile file,
+                                                          Authentication authentication) throws IOException {
+        var server = serverService.getServerEntity(id);
+        String fileName = file.getOriginalFilename();
+        if (fileName == null || fileName.isBlank()) {
+            fileName = "upload";
+        }
+        String remotePath = path.endsWith("/") ? path + fileName : path + "/" + fileName;
+        sshService.uploadFile(server, file.getBytes(), remotePath);
+        return ResponseEntity.ok(Map.of("fileName", fileName, "path", remotePath));
     }
 
     @GetMapping("/{id}/ssh/session-token")
