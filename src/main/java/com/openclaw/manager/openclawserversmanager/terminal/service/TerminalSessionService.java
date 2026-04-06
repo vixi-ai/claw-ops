@@ -50,6 +50,13 @@ public class TerminalSessionService {
         return token;
     }
 
+    public String generatePersistentToken(UUID serverId, UUID userId, String sessionId) {
+        String token = UUID.randomUUID().toString();
+        Instant expiresAt = Instant.now().plusSeconds(terminalConfig.getTokenExpirySeconds());
+        pendingTokens.put(token, new SessionTokenInfo(token, userId, serverId, expiresAt, null, sessionId, true));
+        return token;
+    }
+
     public SessionTokenInfo validateAndConsumeToken(String token) {
         SessionTokenInfo info = pendingTokens.remove(token);
         if (info == null || info.isExpired()) {
@@ -98,6 +105,13 @@ public class TerminalSessionService {
                 .count();
     }
 
+    public List<TerminalSession> findPersistentSessions(UUID serverId) {
+        return activeSessions.values().stream()
+                .filter(s -> s.isPersistentSession() && s.getServerId().equals(serverId)
+                        && s.getSshSession().isConnected())
+                .toList();
+    }
+
     @Scheduled(fixedRate = 60000)
     public void cleanupExpiredTokensAndSessions() {
         // Clean expired tokens
@@ -112,6 +126,11 @@ public class TerminalSessionService {
             // Skip deployment sessions that are still running (SSH connected + script not completed)
             if (session.isDeploymentSession() && !session.isScriptCompleted()
                     && session.getSshSession().isConnected()) {
+                continue;
+            }
+
+            // Skip persistent sessions that are still connected
+            if (session.isPersistentSession() && session.getSshSession().isConnected()) {
                 continue;
             }
 

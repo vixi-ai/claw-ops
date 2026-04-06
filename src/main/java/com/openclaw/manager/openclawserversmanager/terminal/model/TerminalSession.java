@@ -18,14 +18,24 @@ public class TerminalSession {
 
     // Deployment-specific fields
     private final UUID deploymentJobId;
-    private final StringBuilder outputBuffer;
     private volatile boolean scriptCompleted;
 
+    // Persistent session flag (SSH survives WS disconnect, output buffered)
+    private final boolean persistent;
+
+    // Output buffer — allocated for deployment and persistent sessions
+    private final StringBuilder outputBuffer;
+
     public TerminalSession(String sessionId, UUID serverId, UUID userId, SshSession sshSession) {
-        this(sessionId, serverId, userId, sshSession, null);
+        this(sessionId, serverId, userId, sshSession, null, false);
     }
 
     public TerminalSession(String sessionId, UUID serverId, UUID userId, SshSession sshSession, UUID deploymentJobId) {
+        this(sessionId, serverId, userId, sshSession, deploymentJobId, false);
+    }
+
+    public TerminalSession(String sessionId, UUID serverId, UUID userId, SshSession sshSession,
+                           UUID deploymentJobId, boolean persistent) {
         this.sessionId = sessionId;
         this.serverId = serverId;
         this.userId = userId;
@@ -33,7 +43,8 @@ public class TerminalSession {
         this.createdAt = Instant.now();
         this.lastActivityAt = Instant.now();
         this.deploymentJobId = deploymentJobId;
-        this.outputBuffer = deploymentJobId != null ? new StringBuilder() : null;
+        this.persistent = persistent;
+        this.outputBuffer = (deploymentJobId != null || persistent) ? new StringBuilder() : null;
         this.scriptCompleted = false;
     }
 
@@ -45,6 +56,7 @@ public class TerminalSession {
     public Instant getLastActivityAt() { return lastActivityAt; }
     public UUID getDeploymentJobId() { return deploymentJobId; }
     public boolean isScriptCompleted() { return scriptCompleted; }
+    public boolean isPersistent() { return persistent; }
 
     public void touch() {
         this.lastActivityAt = Instant.now();
@@ -52,6 +64,10 @@ public class TerminalSession {
 
     public boolean isDeploymentSession() {
         return deploymentJobId != null;
+    }
+
+    public boolean isPersistentSession() {
+        return persistent;
     }
 
     public void appendToBuffer(String output) {
