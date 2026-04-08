@@ -25,4 +25,6 @@ public interface ServerRepository extends JpaRepository<Server, UUID> {
     boolean existsByCredentialId(UUID credentialId);
 
     List<Server> findBySubdomainIsNotNull();
+
+    Page<Server> findByIdIn(List<UUID> ids, Pageable pageable);
 }

@@ -91,6 +91,13 @@ public class SecurityConfig {
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/domain-assignments/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/ssl-certificates/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/notification-providers/**").hasAuthority("ROLE_ADMIN");
+                        // EMPLOYEE restrictions — cannot manage infrastructure
+                        auth.requestMatchers(HttpMethod.POST, "/api/v1/servers").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/secrets/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/provider-accounts/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/zones/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/domain-assignments/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/ssl-certificates/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
                         // Notification endpoints — any authenticated user
                         auth.requestMatchers("/api/v1/notifications/**").authenticated();
                         auth.requestMatchers("/api/v1/notification-providers/**").authenticated();
