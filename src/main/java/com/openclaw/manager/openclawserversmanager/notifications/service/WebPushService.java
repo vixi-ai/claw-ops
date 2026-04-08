@@ -10,6 +10,7 @@ import com.openclaw.manager.openclawserversmanager.notifications.repository.Push
 import com.openclaw.manager.openclawserversmanager.secrets.service.SecretService;
 import nl.martijndwars.webpush.Notification;
 import nl.martijndwars.webpush.PushService;
+import org.apache.http.HttpResponse;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -113,15 +114,21 @@ public class WebPushService implements NotificationSender {
                         sub.getKeyAuth(),
                         payload.getBytes()
                 );
-                pushService.send(notification);
-                sent++;
+                HttpResponse response = pushService.send(notification);
+                int statusCode = response.getStatusLine().getStatusCode();
+
+                if (statusCode == 201) {
+                    sent++;
+                } else if (statusCode == 410 || statusCode == 404) {
+                    // Subscription expired or not found — clean up
+                    subscriptionRepository.delete(sub);
+                    log.info("Removed stale push subscription ({}): {}", statusCode, sub.getEndpoint());
+                } else {
+                    log.warn("Push service returned {} for {}: {}", statusCode, sub.getEndpoint(),
+                            response.getStatusLine().getReasonPhrase());
+                }
             } catch (Exception e) {
                 log.warn("Failed to send push to {}: {}", sub.getEndpoint(), e.getMessage());
-                // Remove stale subscriptions (410 Gone)
-                if (e.getMessage() != null && e.getMessage().contains("410")) {
-                    subscriptionRepository.delete(sub);
-                    log.info("Removed stale subscription: {}", sub.getEndpoint());
-                }
             }
         }
 
