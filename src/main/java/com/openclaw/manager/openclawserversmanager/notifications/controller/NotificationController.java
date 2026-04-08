@@ -12,6 +12,7 @@ import com.openclaw.manager.openclawserversmanager.notifications.entity.DeviceTo
 import com.openclaw.manager.openclawserversmanager.notifications.entity.PushSubscription;
 import com.openclaw.manager.openclawserversmanager.notifications.service.FirebaseService;
 import com.openclaw.manager.openclawserversmanager.notifications.service.NotificationDispatchService;
+import com.openclaw.manager.openclawserversmanager.notifications.service.NotificationProviderService;
 import com.openclaw.manager.openclawserversmanager.notifications.service.UserDeviceService;
 import com.openclaw.manager.openclawserversmanager.notifications.service.WebPushService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -42,17 +43,20 @@ public class NotificationController {
     private final WebPushService webPushService;
     private final FirebaseService firebaseService;
     private final NotificationDispatchService dispatchService;
+    private final NotificationProviderService providerService;
     private final UserDeviceService userDeviceService;
     private final AuditService auditService;
 
     public NotificationController(WebPushService webPushService,
                                   FirebaseService firebaseService,
                                   NotificationDispatchService dispatchService,
+                                  NotificationProviderService providerService,
                                   UserDeviceService userDeviceService,
                                   AuditService auditService) {
         this.webPushService = webPushService;
         this.firebaseService = firebaseService;
         this.dispatchService = dispatchService;
+        this.providerService = providerService;
         this.userDeviceService = userDeviceService;
         this.auditService = auditService;
     }
@@ -63,6 +67,24 @@ public class NotificationController {
     @Operation(summary = "Get the VAPID public key for push subscription")
     public ResponseEntity<Map<String, String>> getVapidPublicKey() {
         return ResponseEntity.ok(Map.of("publicKey", webPushService.getVapidPublicKey()));
+    }
+
+    @GetMapping("/fcm-config")
+    @Operation(summary = "Get the Firebase web config for client-side FCM initialization")
+    public ResponseEntity<Map<String, Object>> getFcmConfig() {
+        try {
+            var provider = providerService.getDefaultFcmProvider();
+            var settings = com.openclaw.manager.openclawserversmanager.notifications.mapper.NotificationProviderMapper
+                    .deserializeSettings(provider.getProviderSettings());
+            if (settings == null || !settings.containsKey("firebaseConfig")) {
+                return ResponseEntity.notFound().build();
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> config = (Map<String, Object>) settings.get("firebaseConfig");
+            return ResponseEntity.ok(config);
+        } catch (Exception e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     @PostMapping("/push/subscribe")
