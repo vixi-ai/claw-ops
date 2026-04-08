@@ -61,7 +61,8 @@
       "Bash(findstr LISTENING)",
       "Bash(taskkill //PID 5460 //F)",
       "Bash(find /e/Reputeo/openclaw-servers-manager/.claude/backlog -name \"*.md\" -exec grep -l \"upload\\\\|download\\\\|sftp\\\\|file\" -i {} \\\\;)",
-      "Bash(ipconfig)"
+      "Bash(ipconfig)",
+      "Bash(ls -la \"e:\\\\Reputeo\\\\claw-ops\\\\src\\\\main\\\\resources\\\\application\"*)"
     ],
     "additionalDirectories": [
       "e:\\Reputeo\\openclaw-servers-manager\\.claude",

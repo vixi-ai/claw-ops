@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notifications - OpenClaw Control Plane</title>
+    <link rel="stylesheet" href="common.css">
+    <style>
+        .section { margin-bottom: 32px; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .section-header h2 { margin: 0; }
+
+        .push-status {
+            padding: 10px 14px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .push-status.subscribed { background: rgba(78, 205, 196, 0.12); color: var(--success); border: 1px solid rgba(78, 205, 196, 0.25); }
+        .push-status.not-subscribed { background: rgba(255, 107, 107, 0.12); color: var(--danger); border: 1px solid rgba(255, 107, 107, 0.25); }
+
+        .log-panel {
+            margin-top: 24px;
+            padding: 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-muted);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .field-label { display: block; font-size: 11px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; }
+        .field-label .req { color: var(--danger); opacity: 0.7; }
+
+        .modal-overlay .modal { max-width: 520px; }
+    </style>
+</head>
+<body>
+    <script src="common.js"></script>
+    <script>requireAuth();</script>
+    <!-- Firebase JS SDK (compat mode for service worker compatibility) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
+
+    <div id="header"></div>
+    <div class="container">
+        <div id="alert" class="alert"></div>
+
+        <!-- Push status (only visible when WEB_PUSH provider exists) -->
+        <div class="section" id="webPushSection" style="display:none;">
+            <div id="pushStatus" class="push-status not-subscribed">
+                Web Push: <strong>checking...</strong>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-primary btn-sm" onclick="subscribePush()" id="btnSubscribe">Subscribe to Web Push</button>
+                <button class="btn btn-ghost btn-sm" onclick="unsubscribePush()" id="btnUnsubscribe" disabled>Unsubscribe</button>
+            </div>
+        </div>
+
+        <!-- My Devices -->
+        <div class="section">
+            <div class="section-header">
+                <h2>My Devices</h2>
+                <button class="btn btn-primary" onclick="registerThisDevice()">+ Register This Device</button>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr><th>Device</th><th>Platform</th><th>Notifications</th><th>Registered</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="devicesTable">
+                        <tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Send notification -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Send Notification</h2>
+            </div>
+            <div class="card">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div class="form-group">
+                        <label for="notifTitle">Title</label>
+                        <input type="text" id="notifTitle" placeholder="Alert" value="Test Notification">
+                    </div>
+                    <div class="form-group">
+                        <label for="notifBody">Body</label>
+                        <input type="text" id="notifBody" placeholder="Something happened" value="Hello from ClawOps!">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr auto;gap:12px;margin-top:8px;">
+                    <div class="form-group" style="margin:0;">
+                        <label class="field-label">Send Target</label>
+                        <select id="sendTarget" onchange="toggleUserIdField()">
+                            <option value="default">Default Provider (all subscribers)</option>
+                            <option value="all">All Providers (broadcast)</option>
+                            <option value="user">Specific User</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="userIdGroup" style="display:none;margin:0;">
+                        <label class="field-label">User ID</label>
+                        <input type="text" id="targetUserId" placeholder="UUID of the user" style="font-family:var(--mono);font-size:12px;">
+                    </div>
+                </div>
+                <div class="btn-group" style="margin-top:12px;">
+                    <button class="btn btn-primary" onclick="sendNotificationAction()">Send</button>
+                    <button class="btn btn-ghost" onclick="sendQuickTest()">Quick Test</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Providers -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Providers</h2>
+                <button class="btn btn-primary" onclick="showProviderModal()">+ Add Provider</button>
+            </div>
+            <div class="card" style="padding:0;overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr><th>Name</th><th>Type</th><th>Status</th><th>Credential</th><th>Info</th><th>Created</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="providerTable">
+                        <tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="log-panel" id="log"></div>
+    </div>
+
+    <!-- Create Provider Modal -->
+    <div class="modal-overlay" id="providerModal">
+        <div class="modal">
+            <h3>Add Notification Provider</h3>
+            <form id="providerForm">
+                <div class="form-group">
+                    <label class="field-label">Provider Type <span class="req">*</span></label>
+                    <select id="providerType" required onchange="toggleProviderFields()">
+                        <option value="WEB_PUSH">Web Push (VAPID)</option>
+                        <option value="FCM">Firebase Cloud Messaging</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="field-label">Display Name <span class="req">*</span></label>
+                    <input type="text" id="displayName" required maxlength="100" placeholder="e.g. My Push Service">
+                </div>
+
+                <!-- WEB_PUSH fields -->
+                <div id="webPushFields">
+                    <div class="form-group">
+                        <label class="field-label">VAPID Public Key <span class="req">*</span></label>
+                        <input type="text" id="vapidPublicKey" placeholder="BLcex5XS4d..." style="font-family:var(--mono);font-size:12px;">
+                    </div>
+                    <div class="form-group">
+                        <label class="field-label">VAPID Private Key <span class="req">*</span></label>
+                        <input type="password" id="vapidPrivateKey" placeholder="Stored encrypted" autocomplete="off" style="font-family:var(--mono);font-size:12px;">
+                        <small class="text-muted" style="font-size:10px;margin-top:4px;display:block;">Encrypted at rest using AES-GCM</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="field-label">Contact Email</label>
+                        <input type="text" id="mailto" placeholder="mailto:admin@example.com" value="mailto:admin@localhost">
+                    </div>
+                </div>
+
+                <!-- FCM fields -->
+                <div id="fcmFields" style="display:none;">
+                    <div class="form-group">
+                        <label class="field-label">Service Account JSON <span class="req">*</span></label>
+                        <textarea id="fcmServiceAccount" rows="6" placeholder="Paste your Firebase service account JSON here..." style="font-family:var(--mono);font-size:12px;"></textarea>
+                        <small class="text-muted" style="font-size:10px;margin-top:4px;display:block;">From Firebase Console > Project Settings > Service Accounts. Encrypted at rest.</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="field-label">Firebase Web Config JSON <span class="req">*</span></label>
+                        <textarea id="fcmWebConfig" rows="5" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","messagingSenderId":"...","appId":"..."}' style="font-family:var(--mono);font-size:12px;"></textarea>
+                        <small class="text-muted" style="font-size:10px;margin-top:4px;display:block;">From Firebase Console > Project Settings > General > Your apps > Web app config. These are public values.</small>
+                    </div>
+                </div>
+
+                <div id="provModalAlert" class="alert"></div>
+                <div class="flex-between mt-8">
+                    <button type="button" class="btn btn-ghost" onclick="closeProviderModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="provSubmitBtn">Add Provider</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Web Config Modal -->
+    <div class="modal-overlay" id="webConfigModal">
+        <div class="modal">
+            <h3>Add Firebase Web Config</h3>
+            <p class="text-muted text-sm" style="margin-bottom:12px;">From Firebase Console > Project Settings > General > Your apps > Web app. If no web app exists, click "Add app" > Web icon.</p>
+            <input type="hidden" id="webConfigProviderId">
+            <input type="hidden" id="webConfigExistingSettings">
+            <div class="form-group">
+                <label class="field-label">Firebase Web Config JSON <span class="req">*</span></label>
+                <textarea id="webConfigJson" rows="8" placeholder='{"apiKey":"AIza...","authDomain":"your-project.firebaseapp.com","projectId":"your-project","storageBucket":"your-project.appspot.com","messagingSenderId":"123456789","appId":"1:123:web:abc"}' style="font-family:var(--mono);font-size:12px;"></textarea>
+            </div>
+            <div id="webConfigAlert" class="alert"></div>
+            <div class="flex-between mt-8">
+                <button type="button" class="btn btn-ghost" onclick="closeWebConfigModal()">Cancel</button>
+                <button type="button" class="btn btn-primary" id="webConfigSubmitBtn" onclick="submitWebConfig()">Save Web Config</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('header').innerHTML = headerHTML('Notifications');
+
+        const logEl = document.getElementById('log');
+        const log = (msg) => {
+            logEl.innerHTML = `<div>${new Date().toLocaleTimeString()} — ${msg}</div>` + logEl.innerHTML;
+        };
+
+        function esc(str) {
+            if (!str) return '';
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        // ══════════════════════════════════════
+        //  SERVICE WORKER + WEB PUSH (only if WEB_PUSH provider exists)
+        // ══════════════════════════════════════
+
+        let swRegistration = null;
+        let hasWebPushProvider = false;
+
+        async function initSW() {
+            // Only init Web Push service worker if a WEB_PUSH provider exists
+            const res = await apiFetch('/notifications/vapid-key');
+            if (!res.ok) {
+                // No WEB_PUSH provider — hide the section, this is fine for FCM-only setups
+                return;
+            }
+
+            hasWebPushProvider = true;
+            document.getElementById('webPushSection').style.display = '';
+
+            if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+                log('Web Push not supported in this browser');
+                return;
+            }
+            try {
+                swRegistration = await navigator.serviceWorker.register('/dev/push-sw.js');
+                log('Service worker registered');
+                await checkPushStatus();
+            } catch (err) {
+                log('SW registration failed: ' + err.message);
+            }
+        }
+
+        async function checkPushStatus() {
+            if (!swRegistration) return;
+            const sub = await swRegistration.pushManager.getSubscription();
+            const el = document.getElementById('pushStatus');
+            const btnSub = document.getElementById('btnSubscribe');
+            const btnUnsub = document.getElementById('btnUnsubscribe');
+            if (sub) {
+                el.className = 'push-status subscribed';
+                el.innerHTML = 'Web Push: <strong>Subscribed</strong>';
+                btnSub.disabled = true;
+                btnUnsub.disabled = false;
+            } else {
+                el.className = 'push-status not-subscribed';
+                el.innerHTML = 'Web Push: <strong>Not subscribed</strong>';
+                btnSub.disabled = false;
+                btnUnsub.disabled = true;
+            }
+        }
+
+        async function subscribePush() {
+            try {
+                const res = await apiFetch('/notifications/vapid-key');
+                if (!res.ok) throw new Error('No WEB_PUSH provider configured');
+                const { publicKey } = await res.json();
+
+                const sub = await swRegistration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(publicKey),
+                });
+
+                const keys = sub.toJSON().keys;
+                const subRes = await apiFetch('/notifications/push/subscribe', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        endpoint: sub.endpoint,
+                        keyAuth: keys.auth,
+                        keyP256dh: keys.p256dh,
+                    }),
+                });
+                if (!subRes.ok) throw new Error('Backend subscribe failed');
+                log('Web Push subscribed');
+                await checkPushStatus();
+            } catch (err) {
+                log('Subscribe failed: ' + err.message);
+            }
+        }
+
+        async function unsubscribePush() {
+            try {
+                const sub = await swRegistration.pushManager.getSubscription();
+                if (sub) {
+                    await apiFetch('/notifications/push/unsubscribe', {
+                        method: 'DELETE',
+                        body: JSON.stringify({ endpoint: sub.endpoint }),
+                    });
+                    await sub.unsubscribe();
+                    log('Web Push unsubscribed');
+                }
+                await checkPushStatus();
+            } catch (err) {
+                log('Unsubscribe failed: ' + err.message);
+            }
+        }
+
+        // ══════════════════════════════════════
+        //  SEND NOTIFICATION
+        // ══════════════════════════════════════
+
+        function toggleUserIdField() {
+            const target = document.getElementById('sendTarget').value;
+            document.getElementById('userIdGroup').style.display = target === 'user' ? '' : 'none';
+        }
+
+        async function sendQuickTest() {
+            await sendToEndpoint('/notifications/send', 'Test Notification', 'This is a test push from ClawOps');
+        }
+
+        async function sendNotificationAction() {
+            const title = document.getElementById('notifTitle').value;
+            const body = document.getElementById('notifBody').value;
+            if (!title || !body) { showError('Title and body are required'); return; }
+
+            const target = document.getElementById('sendTarget').value;
+
+            if (target === 'default') {
+                await sendToEndpoint('/notifications/send', title, body);
+            } else if (target === 'all') {
+                await sendToEndpoint('/notifications/send/all', title, body);
+            } else if (target === 'user') {
+                const userId = document.getElementById('targetUserId').value.trim();
+                if (!userId) { showError('User ID is required'); return; }
+                await sendToEndpoint(`/notifications/send/user/${userId}`, title, body);
+            }
+        }
+
+        async function sendToEndpoint(endpoint, title, body) {
+            try {
+                const res = await apiFetch(endpoint, {
+                    method: 'POST',
+                    body: JSON.stringify({ title, body }),
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    const target = data.targetUserId ? ` (user: ${data.targetUserId})` : '';
+                    log(`Sent to ${data.sent} subscriber(s)${target}`);
+                    showSuccess(`Notification sent to ${data.sent} subscriber(s)${target}`);
+                } else {
+                    log('Send failed: ' + (data.message || res.statusText));
+                    showError('Send failed: ' + (data.message || res.statusText));
+                }
+            } catch (err) {
+                log('Send error: ' + err.message);
+                showError('Send error: ' + err.message);
+            }
+        }
+
+        // ══════════════════════════════════════
+        //  PROVIDER MODAL
+        // ══════════════════════════════════════
+
+        function toggleProviderFields() {
+            const type = document.getElementById('providerType').value;
+            document.getElementById('webPushFields').style.display = type === 'WEB_PUSH' ? '' : 'none';
+            document.getElementById('fcmFields').style.display = type === 'FCM' ? '' : 'none';
+        }
+
+        function showProviderModal() {
+            document.getElementById('providerType').value = 'WEB_PUSH';
+            document.getElementById('displayName').value = '';
+            document.getElementById('vapidPublicKey').value = '';
+            document.getElementById('vapidPrivateKey').value = '';
+            document.getElementById('mailto').value = 'mailto:admin@localhost';
+            document.getElementById('fcmServiceAccount').value = '';
+            document.getElementById('fcmWebConfig').value = '';
+            hideAlert('provModalAlert');
+            toggleProviderFields();
+            document.getElementById('providerModal').classList.add('show');
+        }
+
+        function closeProviderModal() {
+            document.getElementById('providerModal').classList.remove('show');
+        }
+
+        document.getElementById('providerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlert('provModalAlert');
+            const btn = document.getElementById('provSubmitBtn');
+            btn.disabled = true; btn.textContent = 'Adding...';
+
+            try {
+                const providerType = document.getElementById('providerType').value;
+                const displayName = document.getElementById('displayName').value.trim();
+
+                if (!displayName) { showError('Display name is required', 'provModalAlert'); return; }
+
+                let secretId, providerSettings;
+
+                if (providerType === 'WEB_PUSH') {
+                    const vapidPublicKey = document.getElementById('vapidPublicKey').value.trim();
+                    const vapidPrivateKey = document.getElementById('vapidPrivateKey').value.trim();
+                    const mailto = document.getElementById('mailto').value.trim();
+
+                    if (!vapidPublicKey || !vapidPrivateKey) {
+                        showError('VAPID keys are required', 'provModalAlert'); return;
+                    }
+
+                    const secretRes = await apiFetch('/secrets', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            name: `vapid-${displayName.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
+                            type: 'NOTIFICATION_PUSH_VAPID',
+                            value: vapidPrivateKey,
+                        }),
+                    });
+                    if (!secretRes.ok) {
+                        const err = await secretRes.json();
+                        throw new Error(err.message || 'Failed to store VAPID secret');
+                    }
+                    secretId = (await secretRes.json()).id;
+                    providerSettings = { vapidPublicKey, mailto };
+                    log('VAPID secret stored: ' + secretId);
+
+                } else if (providerType === 'FCM') {
+                    const serviceAccountJson = document.getElementById('fcmServiceAccount').value.trim();
+                    const webConfigJson = document.getElementById('fcmWebConfig').value.trim();
+                    if (!serviceAccountJson) {
+                        showError('Service account JSON is required', 'provModalAlert'); return;
+                    }
+                    if (!webConfigJson) {
+                        showError('Firebase web config is required', 'provModalAlert'); return;
+                    }
+
+                    let parsed;
+                    try { parsed = JSON.parse(serviceAccountJson); } catch (err) {
+                        showError('Invalid service account JSON: ' + err.message, 'provModalAlert'); return;
+                    }
+
+                    let webConfig;
+                    try { webConfig = JSON.parse(webConfigJson); } catch (err) {
+                        showError('Invalid web config JSON: ' + err.message, 'provModalAlert'); return;
+                    }
+
+                    if (!webConfig.apiKey || !webConfig.messagingSenderId || !webConfig.appId) {
+                        showError('Web config must include apiKey, messagingSenderId, and appId', 'provModalAlert'); return;
+                    }
+
+                    const secretRes = await apiFetch('/secrets', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            name: `fcm-${displayName.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
+                            type: 'FIREBASE_SERVICE_ACCOUNT',
+                            value: serviceAccountJson,
+                        }),
+                    });
+                    if (!secretRes.ok) {
+                        const err = await secretRes.json();
+                        throw new Error(err.message || 'Failed to store Firebase secret');
+                    }
+                    secretId = (await secretRes.json()).id;
+                    providerSettings = {
+                        projectId: parsed.project_id || '',
+                        firebaseConfig: webConfig,
+                    };
+                    log('Firebase secret stored: ' + secretId);
+                }
+
+                const provRes = await apiFetch('/notification-providers', {
+                    method: 'POST',
+                    body: JSON.stringify({ providerType, displayName, credentialId: secretId, providerSettings }),
+                });
+                if (!provRes.ok) {
+                    const err = await provRes.json();
+                    throw new Error(err.message || 'Failed to create provider');
+                }
+                const prov = await provRes.json();
+                log('Provider created: ' + prov.displayName + (prov.isDefault ? ' (default)' : ''));
+
+                closeProviderModal();
+                showSuccess('Provider created');
+                loadProviders();
+            } catch (err) {
+                showError(err.message, 'provModalAlert');
+            } finally {
+                btn.disabled = false; btn.textContent = 'Add Provider';
+            }
+        });
+
+        // ══════════════════════════════════════
+        //  PROVIDER LIST
+        // ══════════════════════════════════════
+
+        async function loadProviders() {
+            try {
+                const res = await apiFetch('/notification-providers?size=50&sort=createdAt,desc');
+                const data = await res.json();
+                const providers = data.content || [];
+
+                const tbody = document.getElementById('providerTable');
+                if (!providers.length) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;">No providers configured yet. Add one to get started.</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = providers.map(p => `
+                    <tr>
+                        <td>
+                            <strong>${esc(p.displayName)}</strong>
+                            ${p.isDefault ? '<span class="badge badge-active" style="margin-left:6px;">DEFAULT</span>' : ''}
+                        </td>
+                        <td><span class="badge">${p.providerType}</span></td>
+                        <td><span class="badge ${p.enabled ? 'badge-active' : 'badge-soon'}">${p.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                        <td class="text-sm text-muted" style="font-family:var(--mono);font-size:11px;">${p.credentialId ? p.credentialId.substring(0, 8) + '...' : 'none'}</td>
+                        <td class="text-sm text-muted">
+                            ${p.providerType === 'FCM' && p.providerSettings?.projectId ? 'Project: ' + esc(p.providerSettings.projectId) : ''}
+                            ${p.providerType === 'FCM' && !p.providerSettings?.firebaseConfig ? '<span class="badge" style="background:rgba(255,217,61,0.15);color:var(--warning);margin-left:4px;">Missing Web Config</span>' : ''}
+                            ${p.providerType === 'WEB_PUSH' && p.providerSettings?.vapidPublicKey ? 'VAPID: ' + esc(p.providerSettings.vapidPublicKey.substring(0, 20)) + '...' : ''}
+                        </td>
+                        <td class="text-sm text-muted" style="white-space:nowrap;">${formatDate(p.createdAt)}</td>
+                        <td style="white-space:nowrap;">
+                            <button class="btn btn-ghost btn-sm" onclick="validateProvider('${p.id}', this)">Validate</button>
+                            ${p.providerType === 'FCM' && !p.providerSettings?.firebaseConfig ? `<button class="btn btn-primary btn-sm" onclick="showWebConfigModal('${p.id}', ${JSON.stringify(JSON.stringify(p.providerSettings || {}))})">Add Web Config</button>` : ''}
+                            ${!p.isDefault ? `<button class="btn btn-ghost btn-sm" onclick="setDefault('${p.id}')">Set Default</button>` : ''}
+                            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteProvider('${p.id}','${esc(p.displayName)}')">Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                document.getElementById('providerTable').innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:32px;color:var(--danger);">Failed to load providers</td></tr>';
+            }
+        }
+
+        async function validateProvider(id, btn) {
+            btn.textContent = 'Validating...'; btn.disabled = true;
+            try {
+                const res = await apiFetch(`/notification-providers/${id}/validate`, { method: 'POST' });
+                const data = await res.json();
+                if (data.valid) {
+                    showSuccess('Credentials valid: ' + data.message);
+                    log('Validation passed: ' + data.message);
+                } else {
+                    showError('Credentials invalid: ' + data.message);
+                    log('Validation failed: ' + data.message);
+                }
+            } catch (err) {
+                showError('Validate error: ' + err.message);
+            } finally {
+                btn.textContent = 'Validate'; btn.disabled = false;
+            }
+        }
+
+        // ── Web Config Modal ──
+        function showWebConfigModal(providerId, existingSettingsJson) {
+            document.getElementById('webConfigProviderId').value = providerId;
+            document.getElementById('webConfigExistingSettings').value = existingSettingsJson;
+            document.getElementById('webConfigJson').value = '';
+            hideAlert('webConfigAlert');
+            document.getElementById('webConfigModal').classList.add('show');
+        }
+
+        function closeWebConfigModal() {
+            document.getElementById('webConfigModal').classList.remove('show');
+        }
+
+        async function submitWebConfig() {
+            hideAlert('webConfigAlert');
+            const providerId = document.getElementById('webConfigProviderId').value;
+            const existingSettings = JSON.parse(document.getElementById('webConfigExistingSettings').value || '{}');
+            const configJson = document.getElementById('webConfigJson').value.trim();
+
+            if (!configJson) { showError('Web config JSON is required', 'webConfigAlert'); return; }
+
+            let webConfig;
+            try { webConfig = JSON.parse(configJson); } catch (err) {
+                showError('Invalid JSON: ' + err.message, 'webConfigAlert'); return;
+            }
+
+            if (!webConfig.apiKey || !webConfig.messagingSenderId || !webConfig.appId) {
+                showError('Must include apiKey, messagingSenderId, and appId', 'webConfigAlert'); return;
+            }
+
+            const btn = document.getElementById('webConfigSubmitBtn');
+            btn.disabled = true; btn.textContent = 'Saving...';
+
+            try {
+                const mergedSettings = { ...existingSettings, firebaseConfig: webConfig };
+                const res = await apiFetch(`/notification-providers/${providerId}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ providerSettings: mergedSettings }),
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.message || 'Failed to update provider');
+                }
+                closeWebConfigModal();
+                showSuccess('Web config saved — Firebase can now initialize');
+                log('Web config added to provider');
+                loadProviders();
+                // Re-init Firebase with new config
+                fcmApp = null; fcmMessaging = null;
+                const fbOk = await initFirebase();
+                if (fbOk) setupForegroundListener();
+            } catch (err) {
+                showError(err.message, 'webConfigAlert');
+            } finally {
+                btn.disabled = false; btn.textContent = 'Save Web Config';
+            }
+        }
+
+        async function setDefault(id) {
+            const res = await apiFetch(`/notification-providers/${id}/set-default`, { method: 'POST' });
+            if (res.ok) { log('Default updated'); showSuccess('Default provider updated'); loadProviders(); }
+            else { log('Failed to set default'); showError('Failed to set default'); }
+        }
+
+        async function deleteProvider(id, name) {
+            if (!confirm(`Delete provider "${name}" and all its subscriptions?`)) return;
+            const res = await apiFetch(`/notification-providers/${id}`, { method: 'DELETE' });
+            if (res.ok || res.status === 204) { log('Deleted'); showSuccess('Provider deleted'); loadProviders(); }
+            else { log('Delete failed'); showError('Delete failed'); }
+        }
+
+        // ══════════════════════════════════════
+        //  USER DEVICES
+        // ══════════════════════════════════════
+
+        async function loadDevices() {
+            try {
+                const res = await apiFetch('/notifications/devices');
+                if (!res.ok) { log('Failed to load devices'); return; }
+                const devices = await res.json();
+                const tbody = document.getElementById('devicesTable');
+
+                if (!devices.length) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:32px;">No devices registered. Click "+ Register This Device" to add this browser.</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = devices.map(d => `
+                    <tr>
+                        <td><strong>${esc(d.deviceName)}</strong></td>
+                        <td><span class="badge">${esc(d.platform)}</span></td>
+                        <td>
+                            <button class="btn ${d.notificationsEnabled ? 'btn-primary' : 'btn-ghost'} btn-sm"
+                                onclick="toggleDeviceNotif('${d.id}', ${!d.notificationsEnabled})">
+                                ${d.notificationsEnabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                        </td>
+                        <td class="text-sm text-muted" style="white-space:nowrap;">${formatDate(d.createdAt)}</td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="removeDevice('${d.id}','${esc(d.deviceName)}')">Remove</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                log('Failed to load devices: ' + err.message);
+            }
+        }
+
+        function getBrowserName() {
+            const ua = navigator.userAgent;
+            if (ua.includes('Firefox')) return 'Firefox';
+            if (ua.includes('Edg/')) return 'Edge';
+            if (ua.includes('Chrome')) return 'Chrome';
+            if (ua.includes('Safari')) return 'Safari';
+            return 'Browser';
+        }
+
+        function getPlatformName() {
+            const ua = navigator.userAgent;
+            if (ua.includes('Android')) return 'ANDROID';
+            if (ua.includes('iPhone') || ua.includes('iPad')) return 'IOS';
+            if (ua.includes('Windows')) return 'WINDOWS';
+            if (ua.includes('Mac')) return 'MACOS';
+            if (ua.includes('Linux')) return 'LINUX';
+            return 'WEB';
+        }
+
+        // ── Firebase FCM token acquisition ──
+        let fcmApp = null;
+        let fcmMessaging = null;
+
+        async function getFirebaseConfig() {
+            // Load the default FCM provider's firebaseConfig from provider settings
+            try {
+                const res = await apiFetch('/notification-providers?size=50');
+                if (!res.ok) return null;
+                const data = await res.json();
+                const fcmProvider = (data.content || []).find(p => p.providerType === 'FCM' && p.enabled);
+                if (!fcmProvider || !fcmProvider.providerSettings?.firebaseConfig) return null;
+                return fcmProvider.providerSettings.firebaseConfig;
+            } catch { return null; }
+        }
+
+        async function initFirebase() {
+            if (fcmApp) return true;
+            const config = await getFirebaseConfig();
+            if (!config) {
+                log('No FCM provider with firebaseConfig found');
+                return false;
+            }
+            try {
+                fcmApp = firebase.initializeApp(config);
+                fcmMessaging = firebase.messaging();
+
+                // Register and configure the Firebase service worker
+                const swReg = await navigator.serviceWorker.register('/dev/firebase-messaging-sw.js');
+                // Send config to the service worker so it can handle background messages
+                swReg.active?.postMessage({ type: 'FIREBASE_CONFIG', config });
+                navigator.serviceWorker.ready.then(reg => {
+                    reg.active?.postMessage({ type: 'FIREBASE_CONFIG', config });
+                });
+
+                log('Firebase initialized (project: ' + (config.projectId || 'unknown') + ')');
+                return true;
+            } catch (err) {
+                log('Firebase init failed: ' + err.message);
+                return false;
+            }
+        }
+
+        async function getFcmToken() {
+            if (!fcmMessaging) {
+                const ok = await initFirebase();
+                if (!ok) return null;
+            }
+            try {
+                const permission = await Notification.requestPermission();
+                if (permission !== 'granted') {
+                    log('Notification permission denied');
+                    showError('Notification permission denied — please allow notifications in your browser');
+                    return null;
+                }
+                const swReg = await navigator.serviceWorker.getRegistration('/dev/firebase-messaging-sw.js');
+                const token = await fcmMessaging.getToken({ serviceWorkerRegistration: swReg });
+                log('FCM token obtained: ' + token.substring(0, 20) + '...');
+                return token;
+            } catch (err) {
+                log('Failed to get FCM token: ' + err.message);
+                showError('Failed to get FCM token: ' + err.message);
+                return null;
+            }
+        }
+
+        async function registerThisDevice() {
+            const deviceName = getBrowserName() + ' on ' + getPlatformName();
+            const platform = getPlatformName();
+
+            try {
+                const body = { deviceName, platform };
+
+                // Try FCM token first (if FCM provider exists)
+                const fcmToken = await getFcmToken();
+                if (fcmToken) {
+                    body.fcmToken = fcmToken;
+                }
+
+                // Also try Web Push subscription if available
+                if (swRegistration) {
+                    const sub = await swRegistration.pushManager.getSubscription();
+                    if (sub) {
+                        const keys = sub.toJSON().keys;
+                        body.pushEndpoint = sub.endpoint;
+                        body.pushKeyAuth = keys.auth;
+                        body.pushKeyP256dh = keys.p256dh;
+                    }
+                }
+
+                if (!body.fcmToken && !body.pushEndpoint) {
+                    showError('Could not obtain a notification token. Make sure you have a provider configured and notifications are allowed.');
+                    return;
+                }
+
+                // Register device
+                const res = await apiFetch('/notifications/devices', {
+                    method: 'POST',
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    showError('Register failed: ' + (err.message || JSON.stringify(err)));
+                    return;
+                }
+
+                // Also register FCM token with the backend
+                if (fcmToken) {
+                    const fcmRes = await apiFetch('/notifications/fcm/subscribe', {
+                        method: 'POST',
+                        body: JSON.stringify({ token: fcmToken, platform }),
+                    });
+                    if (fcmRes.ok) {
+                        log('FCM subscription registered');
+                    } else {
+                        log('FCM subscription failed (device still registered)');
+                    }
+                }
+
+                showSuccess('Device registered: ' + deviceName);
+                log('Device registered: ' + deviceName);
+                loadDevices();
+            } catch (err) {
+                showError('Register error: ' + err.message);
+            }
+        }
+
+        // Listen for foreground FCM messages
+        function setupForegroundListener() {
+            if (!fcmMessaging) return;
+            fcmMessaging.onMessage((payload) => {
+                const title = payload.notification?.title || payload.data?.title || 'ClawOps';
+                const body = payload.notification?.body || payload.data?.body || 'New notification';
+                log('Received: ' + title + ' — ' + body);
+                showSuccess(title + ': ' + body);
+                // Also show a browser notification if page is visible
+                if (Notification.permission === 'granted') {
+                    new Notification(title, { body, icon: '/dev/logo.png' });
+                }
+            });
+        }
+
+        async function toggleDeviceNotif(id, enabled) {
+            try {
+                const res = await apiFetch(`/notifications/devices/${id}/toggle`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ enabled }),
+                });
+                if (res.ok) {
+                    log('Notifications ' + (enabled ? 'enabled' : 'disabled'));
+                    loadDevices();
+                } else {
+                    showError('Failed to toggle notifications');
+                }
+            } catch (err) {
+                showError('Toggle error: ' + err.message);
+            }
+        }
+
+        async function removeDevice(id, name) {
+            if (!confirm(`Remove device "${name}"? Notifications will stop for this device.`)) return;
+            const res = await apiFetch(`/notifications/devices/${id}`, { method: 'DELETE' });
+            if (res.ok || res.status === 204) {
+                showSuccess('Device removed');
+                log('Device removed: ' + name);
+                loadDevices();
+            } else {
+                showError('Remove failed');
+            }
+        }
+
+        // ══════════════════════════════════════
+        //  UTILITY
+        // ══════════════════════════════════════
+
+        function urlBase64ToUint8Array(base64String) {
+            const padding = '='.repeat((4 - base64String.length % 4) % 4);
+            const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+            const rawData = window.atob(base64);
+            const outputArray = new Uint8Array(rawData.length);
+            for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+            return outputArray;
+        }
+
+        // ══════════════════════════════════════
+        //  INIT
+        // ══════════════════════════════════════
+
+        (async () => {
+            await initSW();
+            await Promise.all([loadDevices(), loadProviders()]);
+            // Init Firebase after providers are loaded (need the config from provider settings)
+            const fbOk = await initFirebase();
+            if (fbOk) setupForegroundListener();
+        })();
+    </script>
+</body>
+</html>

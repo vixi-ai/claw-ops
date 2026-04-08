@@ -90,6 +90,12 @@ public class SecurityConfig {
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/zones/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/domain-assignments/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/ssl-certificates/**").hasAuthority("ROLE_ADMIN");
+                        auth.requestMatchers(HttpMethod.DELETE, "/api/v1/notification-providers/**").hasAuthority("ROLE_ADMIN");
+                        // Notification endpoints — any authenticated user
+                        auth.requestMatchers("/api/v1/notifications/**").authenticated();
+                        auth.requestMatchers("/api/v1/notification-providers/**").authenticated();
+                        // Static resources
+                        auth.requestMatchers("/favicon.ico").permitAll();
                         // Everything else requires authentication
                         auth.anyRequest().authenticated();
                 })
