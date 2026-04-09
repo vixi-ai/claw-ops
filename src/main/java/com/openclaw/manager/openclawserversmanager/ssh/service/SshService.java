@@ -192,6 +192,34 @@ public class SshService {
         }
     }
 
+    public void downloadFileStreaming(Server server, String remotePath, OutputStream out) {
+        validateRemotePath(remotePath);
+
+        if (server.getCredentialId() == null) {
+            throw new SshConnectionException("No credential configured for server '" + server.getName() + "'");
+        }
+
+        try (SSHClient ssh = createClient(server)) {
+            try (SFTPClient sftp = ssh.newSFTPClient()) {
+                try (net.schmizz.sshj.sftp.RemoteFile remoteFile = sftp.open(remotePath)) {
+                    byte[] buffer = new byte[32768];
+                    int bytesRead;
+                    try (InputStream is = remoteFile.new ReadAheadRemoteFileInputStream(16)) {
+                        while ((bytesRead = is.read(buffer)) != -1) {
+                            out.write(buffer, 0, bytesRead);
+                        }
+                    }
+                    out.flush();
+                }
+            }
+        } catch (SshConnectionException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new SshConnectionException(
+                    "SFTP download failed on %s — %s".formatted(server.getHostname(), e.getMessage()), e);
+        }
+    }
+
     public SshSession openInteractiveSession(Server server, int cols, int rows) {
         if (server.getCredentialId() == null) {
             throw new SshConnectionException("No credential configured for server '" + server.getName() + "'");
