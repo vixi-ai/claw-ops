@@ -26,6 +26,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -105,15 +106,14 @@ public class FirebaseService implements NotificationSender {
         Notification notification = Notification.builder()
                 .setTitle(title)
                 .setBody(body)
-                .setImage("/dev/logo.png")
                 .build();
 
         WebpushConfig webpushConfig = WebpushConfig.builder()
                 .setNotification(WebpushNotification.builder()
                         .setTitle(title)
                         .setBody(body)
-                        .setIcon("/dev/logo.png")
-                        .setBadge("/dev/logo.png")
+                        .setIcon("/logo.png")
+                        .setBadge("/logo.png")
                         .setTag("clawops")
                         .setRenotify(true)
                         .build())
@@ -127,6 +127,7 @@ public class FirebaseService implements NotificationSender {
             MulticastMessage message = MulticastMessage.builder()
                     .setNotification(notification)
                     .setWebpushConfig(webpushConfig)
+                    .putAllData(Map.of("title", title, "body", body, "type", "notification"))
                     .addAllTokens(batch)
                     .build();
             try {
@@ -177,15 +178,14 @@ public class FirebaseService implements NotificationSender {
         Notification notification = Notification.builder()
                 .setTitle(title)
                 .setBody(body)
-                .setImage("/dev/logo.png")
                 .build();
 
         WebpushConfig webpushConfig = WebpushConfig.builder()
                 .setNotification(WebpushNotification.builder()
                         .setTitle(title)
                         .setBody(body)
-                        .setIcon("/dev/logo.png")
-                        .setBadge("/dev/logo.png")
+                        .setIcon("/logo.png")
+                        .setBadge("/logo.png")
                         .setTag("clawops")
                         .setRenotify(true)
                         .build())
@@ -197,6 +197,7 @@ public class FirebaseService implements NotificationSender {
             MulticastMessage message = MulticastMessage.builder()
                     .setNotification(notification)
                     .setWebpushConfig(webpushConfig)
+                    .putAllData(Map.of("title", title, "body", body, "type", "notification"))
                     .addAllTokens(batch)
                     .build();
             try {
@@ -258,8 +259,7 @@ public class FirebaseService implements NotificationSender {
             if (!responses.get(i).isSuccessful()) {
                 FirebaseMessagingException ex = responses.get(i).getException();
                 String tokenPrefix = tokens.get(i).substring(0, Math.min(20, tokens.get(i).length()));
-                if (ex != null && (ex.getMessagingErrorCode() == MessagingErrorCode.UNREGISTERED
-                        || ex.getMessagingErrorCode() == MessagingErrorCode.INVALID_ARGUMENT)) {
+                if (ex != null && ex.getMessagingErrorCode() == MessagingErrorCode.UNREGISTERED) {
                     tokenRepository.deleteByTokenAndProviderId(tokens.get(i), providerId);
                     log.info("Removed stale FCM token ({}): {}...", ex.getMessagingErrorCode(), tokenPrefix);
                 } else if (ex != null) {
