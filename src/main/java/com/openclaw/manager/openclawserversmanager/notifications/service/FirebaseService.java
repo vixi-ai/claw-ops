@@ -257,10 +257,14 @@ public class FirebaseService implements NotificationSender {
         for (int i = 0; i < responses.size(); i++) {
             if (!responses.get(i).isSuccessful()) {
                 FirebaseMessagingException ex = responses.get(i).getException();
+                String tokenPrefix = tokens.get(i).substring(0, Math.min(20, tokens.get(i).length()));
                 if (ex != null && (ex.getMessagingErrorCode() == MessagingErrorCode.UNREGISTERED
                         || ex.getMessagingErrorCode() == MessagingErrorCode.INVALID_ARGUMENT)) {
                     tokenRepository.deleteByTokenAndProviderId(tokens.get(i), providerId);
-                    log.info("Removed stale FCM token: {}...", tokens.get(i).substring(0, Math.min(20, tokens.get(i).length())));
+                    log.info("Removed stale FCM token ({}): {}...", ex.getMessagingErrorCode(), tokenPrefix);
+                } else if (ex != null) {
+                    log.warn("FCM send failed for token {}...: {} ({})",
+                            tokenPrefix, ex.getMessage(), ex.getMessagingErrorCode());
                 }
             }
         }
