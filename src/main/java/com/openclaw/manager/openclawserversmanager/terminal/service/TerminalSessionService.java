@@ -66,8 +66,10 @@ public class TerminalSessionService {
     }
 
     public boolean canOpenSession(UUID userId) {
+        // Only count regular sessions — persistent and deployment sessions have their own lifecycle
         long count = activeSessions.values().stream()
                 .filter(s -> s.getUserId().equals(userId))
+                .filter(s -> !s.isPersistentSession() && !s.isDeploymentSession())
                 .count();
         return count < terminalConfig.getMaxSessionsPerUser();
     }

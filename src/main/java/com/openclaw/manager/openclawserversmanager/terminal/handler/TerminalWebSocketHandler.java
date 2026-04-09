@@ -101,6 +101,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
         // Regular terminal session
         if (!terminalSessionService.canOpenSession(tokenInfo.userId())) {
+            sendMessage(wsSession, new TerminalOutput("ERROR", "Maximum terminal session limit reached. Close other terminals and try again."));
             wsSession.close(new CloseStatus(4002, "Maximum session limit reached"));
             return;
         }
