@@ -109,23 +109,39 @@ public class InteractiveDeploymentService {
 
         Thread.ofVirtual().name("deploy-exec-" + jobId).start(() -> {
             try {
-                // Small delay to let the shell initialize and welcome banner appear
                 Thread.sleep(800);
-                String remotePath = "/tmp/_deploy_" + jobId.toString().substring(0, 8) + ".sh";
-                String heredocMarker = "DEPLOY_SCRIPT_EOF_" + jobId.toString().substring(0, 8);
-                // Write script to a temp file via heredoc, then execute it interactively
-                // This keeps stdin connected to the terminal so read/prompts work
-                String command = "cat > " + remotePath + " <<'" + heredocMarker + "'\n"
+                String id = jobId.toString().substring(0, 8);
+                String scriptPath = "/tmp/_deploy_" + id + ".sh";
+                String wrapperPath = "/tmp/_deploy_wrap_" + id + ".sh";
+                String heredocMarker = "DEPLOY_SCRIPT_EOF_" + id;
+
+                // Phase 1: Write the user's script to a temp file
+                String writeScript = "cat > " + scriptPath + " <<'" + heredocMarker + "'\n"
                         + scriptContent + "\n"
-                        + heredocMarker + "\n"
-                        + "chmod +x " + remotePath + "\n"
-                        + "bash " + remotePath + "\n"
-                        + "__DEPLOY_EC=$?\n"
-                        + "rm -f " + remotePath + "\n"
-                        + "echo __EXIT_CODE:${__DEPLOY_EC}__\n"
-                        + "exit ${__DEPLOY_EC}\n";
-                sshSession.getOutputStream().write(command.getBytes(StandardCharsets.UTF_8));
+                        + heredocMarker + "\n";
+                sshSession.getOutputStream().write(writeScript.getBytes(StandardCharsets.UTF_8));
                 sshSession.getOutputStream().flush();
+                Thread.sleep(300);
+
+                // Phase 2: Write a wrapper that runs the script, cleans up, reports exit code
+                String writeWrapper = "cat > " + wrapperPath + " <<'WRAPPER_EOF'\n"
+                        + "#!/bin/bash\n"
+                        + "bash " + scriptPath + "\n"
+                        + "__ec=$?\n"
+                        + "rm -f " + scriptPath + " " + wrapperPath + "\n"
+                        + "echo __EXIT_CODE:${__ec}__\n"
+                        + "exit ${__ec}\n"
+                        + "WRAPPER_EOF\n";
+                sshSession.getOutputStream().write(writeWrapper.getBytes(StandardCharsets.UTF_8));
+                sshSession.getOutputStream().flush();
+                Thread.sleep(200);
+
+                // Phase 3: Execute the wrapper, then exit the login shell to close the SSH session.
+                // The "; exit" runs in the login shell after the wrapper subshell returns.
+                String execCmd = "bash " + wrapperPath + "; exit\n";
+                sshSession.getOutputStream().write(execCmd.getBytes(StandardCharsets.UTF_8));
+                sshSession.getOutputStream().flush();
+
                 log.info("Script sent to shell for job {}", jobId);
             } catch (Exception e) {
                 log.error("Failed to send script command for job {}: {}", jobId, e.getMessage());

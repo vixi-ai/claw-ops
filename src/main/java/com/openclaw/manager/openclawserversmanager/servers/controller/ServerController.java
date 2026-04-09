@@ -18,7 +18,10 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import java.util.Map;
 import org.springframework.security.core.Authentication;
@@ -31,6 +34,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
 
 import java.util.List;
 import java.util.UUID;
@@ -66,14 +72,18 @@ public class ServerController {
 
     @GetMapping
     @Operation(summary = "List all servers (paginated)")
-    public ResponseEntity<Page<ServerResponse>> getAllServers(Pageable pageable) {
-        return ResponseEntity.ok(serverService.getAllServers(pageable));
+    public ResponseEntity<Page<ServerResponse>> getAllServers(Pageable pageable, Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        String role = extractRole(authentication);
+        return ResponseEntity.ok(serverService.getAllServers(pageable, userId, role));
     }
 
     @GetMapping("/{id}")
     @Operation(summary = "Get server details")
-    public ResponseEntity<ServerResponse> getServerById(@PathVariable UUID id) {
-        return ResponseEntity.ok(serverService.getServerById(id));
+    public ResponseEntity<ServerResponse> getServerById(@PathVariable UUID id, Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        String role = extractRole(authentication);
+        return ResponseEntity.ok(serverService.getServerById(id, userId, role));
     }
 
     @PatchMapping("/{id}")
@@ -82,6 +92,8 @@ public class ServerController {
                                                        @Valid @RequestBody UpdateServerRequest request,
                                                        Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
+        String role = extractRole(authentication);
+        serverService.checkServerAccess(id, userId, role);
         return ResponseEntity.ok(serverService.updateServer(id, request, userId));
     }
 
@@ -98,6 +110,7 @@ public class ServerController {
     public ResponseEntity<TestConnectionResponse> testConnection(@PathVariable UUID id,
                                                                   Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
+        serverService.checkServerAccess(id, userId, extractRole(authentication));
         return ResponseEntity.ok(serverService.testConnection(id, userId));
     }
 
@@ -107,6 +120,7 @@ public class ServerController {
                                                           @Valid @RequestBody ExecuteCommandRequest request,
                                                           Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
+        serverService.checkServerAccess(id, userId, extractRole(authentication));
         return ResponseEntity.ok(serverService.executeCommand(id, request.command(), request.timeoutSeconds(), userId));
     }
 
@@ -115,8 +129,44 @@ public class ServerController {
     public ResponseEntity<List<FileEntry>> listDirectory(@PathVariable UUID id,
                                                           @RequestParam(defaultValue = "/") String path,
                                                           Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        serverService.checkServerAccess(id, userId, extractRole(authentication));
         var server = serverService.getServerEntity(id);
         return ResponseEntity.ok(sshService.listDirectory(server, path));
+    }
+
+    @PostMapping("/{id}/sftp/upload")
+    @Operation(summary = "Upload a file to a remote server via SFTP")
+    public ResponseEntity<Map<String, String>> uploadFile(@PathVariable UUID id,
+                                                          @RequestParam String path,
+                                                          @RequestParam("file") MultipartFile file,
+                                                          Authentication authentication) throws IOException {
+        UUID userId = (UUID) authentication.getPrincipal();
+        serverService.checkServerAccess(id, userId, extractRole(authentication));
+        var server = serverService.getServerEntity(id);
+        String fileName = file.getOriginalFilename();
+        if (fileName == null || fileName.isBlank()) {
+            fileName = "upload";
+        }
+        String remotePath = path.endsWith("/") ? path + fileName : path + "/" + fileName;
+        sshService.uploadFile(server, file.getBytes(), remotePath);
+        return ResponseEntity.ok(Map.of("fileName", fileName, "path", remotePath));
+    }
+
+    @GetMapping("/{id}/sftp/download")
+    @Operation(summary = "Download a file from a remote server via SFTP")
+    public ResponseEntity<byte[]> downloadFile(@PathVariable UUID id,
+                                                @RequestParam String path,
+                                                Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        serverService.checkServerAccess(id, userId, extractRole(authentication));
+        var server = serverService.getServerEntity(id);
+        byte[] content = sshService.downloadFile(server, path);
+        String fileName = path.contains("/") ? path.substring(path.lastIndexOf('/') + 1) : path;
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        headers.setContentDisposition(ContentDisposition.attachment().filename(fileName).build());
+        return new ResponseEntity<>(content, headers, HttpStatus.OK);
     }
 
     @GetMapping("/{id}/ssh/session-token")
@@ -124,7 +174,7 @@ public class ServerController {
     public ResponseEntity<Map<String, Object>> getSessionToken(@PathVariable UUID id,
                                                                 Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
-        // Verify server exists
+        serverService.checkServerAccess(id, userId, extractRole(authentication));
         serverService.getServerById(id);
 
         String token = terminalSessionService.generateSessionToken(id, userId);
@@ -136,5 +186,10 @@ public class ServerController {
         }
 
         return ResponseEntity.ok(Map.of("token", token, "expiresIn", 60));
+    }
+
+    private String extractRole(Authentication authentication) {
+        return authentication.getAuthorities().iterator().next()
+                .getAuthority().replace("ROLE_", "");
     }
 }

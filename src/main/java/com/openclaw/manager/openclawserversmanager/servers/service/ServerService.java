@@ -24,9 +24,12 @@ import com.openclaw.manager.openclawserversmanager.domains.exception.DomainExcep
 import com.openclaw.manager.openclawserversmanager.domains.service.DomainAssignmentService;
 import com.openclaw.manager.openclawserversmanager.domains.service.SslService;
 import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
+import com.openclaw.manager.openclawserversmanager.users.service.UserServerAccessService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.security.access.AccessDeniedException;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -46,17 +49,20 @@ public class ServerService {
     private final SshService sshService;
     private final DomainAssignmentService domainAssignmentService;
     private final SslService sslService;
+    private final UserServerAccessService userServerAccessService;
 
     public ServerService(ServerRepository serverRepository, SecretService secretService,
                          AuditService auditService, SshService sshService,
                          @Lazy DomainAssignmentService domainAssignmentService,
-                         @Lazy SslService sslService) {
+                         @Lazy SslService sslService,
+                         @Lazy UserServerAccessService userServerAccessService) {
         this.serverRepository = serverRepository;
         this.secretService = secretService;
         this.auditService = auditService;
         this.sshService = sshService;
         this.domainAssignmentService = domainAssignmentService;
         this.sslService = sslService;
+        this.userServerAccessService = userServerAccessService;
     }
 
     @Transactional
@@ -115,9 +121,29 @@ public class ServerService {
         return serverRepository.findAll(pageable).map(ServerMapper::toResponse);
     }
 
+    public Page<ServerResponse> getAllServers(Pageable pageable, UUID userId, String role) {
+        if ("EMPLOYEE".equals(role)) {
+            List<UUID> accessibleIds = userServerAccessService.getAccessibleServerIds(userId);
+            if (accessibleIds.isEmpty()) return Page.empty(pageable);
+            return serverRepository.findByIdIn(accessibleIds, pageable).map(ServerMapper::toResponse);
+        }
+        return serverRepository.findAll(pageable).map(ServerMapper::toResponse);
+    }
+
     public ServerResponse getServerById(UUID id) {
         Server server = findServerOrThrow(id);
         return ServerMapper.toResponse(server);
+    }
+
+    public ServerResponse getServerById(UUID id, UUID userId, String role) {
+        checkServerAccess(id, userId, role);
+        return ServerMapper.toResponse(findServerOrThrow(id));
+    }
+
+    public void checkServerAccess(UUID serverId, UUID userId, String role) {
+        if ("EMPLOYEE".equals(role) && !userServerAccessService.hasAccessToServer(userId, serverId)) {
+            throw new AccessDeniedException("You do not have access to this server");
+        }
     }
 
     @Transactional

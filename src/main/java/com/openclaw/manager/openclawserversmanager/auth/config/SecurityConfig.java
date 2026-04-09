@@ -25,6 +25,9 @@ public class SecurityConfig {
     @Value("${springdoc.swagger-ui.enabled:true}")
     private boolean swaggerEnabled;
 
+    @Value("${dev.panel.enabled:true}")
+    private boolean devPanelEnabled;
+
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           CorsConfigurationSource corsConfigurationSource) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
@@ -61,8 +64,12 @@ public class SecurityConfig {
                                     "/v3/api-docs"
                             ).permitAll();
                         }
-                        // Dev admin pages (static resources)
-                        auth.requestMatchers("/dev/**").permitAll();
+                        // Dev admin pages (static resources) — disabled in prod
+                        if (devPanelEnabled) {
+                            auth.requestMatchers("/dev/**").permitAll();
+                        } else {
+                            auth.requestMatchers("/dev/**").denyAll();
+                        }
                         // WebSocket (auth handled by handshake interceptor)
                         auth.requestMatchers("/ws/**").permitAll();
                         // ADMIN only
@@ -83,6 +90,19 @@ public class SecurityConfig {
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/zones/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/domain-assignments/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.DELETE, "/api/v1/ssl-certificates/**").hasAuthority("ROLE_ADMIN");
+                        auth.requestMatchers(HttpMethod.DELETE, "/api/v1/notification-providers/**").hasAuthority("ROLE_ADMIN");
+                        // EMPLOYEE restrictions — cannot manage infrastructure
+                        auth.requestMatchers(HttpMethod.POST, "/api/v1/servers").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/secrets/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/provider-accounts/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/zones/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/domain-assignments/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        auth.requestMatchers("/api/v1/ssl-certificates/**").hasAnyAuthority("ROLE_ADMIN", "ROLE_DEVOPS");
+                        // Notification endpoints — any authenticated user
+                        auth.requestMatchers("/api/v1/notifications/**").authenticated();
+                        auth.requestMatchers("/api/v1/notification-providers/**").authenticated();
+                        // Static resources
+                        auth.requestMatchers("/favicon.ico").permitAll();
                         // Everything else requires authentication
                         auth.anyRequest().authenticated();
                 })

@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Users - OpenClaw Control Plane</title>
     <link rel="stylesheet" href="common.css">
+    <style>
+        .role-employee { color: var(--success); }
+    </style>
 </head>
 <body>
     <script src="common.js"></script>
@@ -64,6 +67,7 @@
                     <select id="formRole">
                         <option value="DEVOPS">DEVOPS</option>
                         <option value="ADMIN">ADMIN</option>
+                        <option value="EMPLOYEE">EMPLOYEE</option>
                     </select>
                 </div>
                 <div class="modal-actions">
@@ -93,6 +97,29 @@
         </div>
     </div>
 
+    <!-- Server Access Modal -->
+    <div class="modal-overlay" id="accessModal">
+        <div class="modal" style="max-width:600px;">
+            <h2>Server Access — <span id="accessUsername"></span></h2>
+            <div id="accessAlert" class="alert"></div>
+            <input type="hidden" id="accessUserId">
+
+            <div id="currentAccessList" style="margin-bottom:16px;"></div>
+
+            <div style="display:flex;gap:8px;align-items:flex-end;">
+                <div class="form-group" style="flex:1;margin:0;">
+                    <label>Add Server</label>
+                    <select id="serverSelect"><option value="">Loading...</option></select>
+                </div>
+                <button class="btn btn-primary" onclick="addServerAccess()">Add</button>
+            </div>
+
+            <div class="modal-actions" style="margin-top:16px;">
+                <button type="button" class="btn btn-ghost" onclick="closeAccessModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         document.getElementById('header').innerHTML = headerHTML('Users');
 
@@ -108,6 +135,12 @@
             renderPagination(data);
         }
 
+        function roleClass(role) {
+            if (role === 'ADMIN') return 'role-admin';
+            if (role === 'EMPLOYEE') return 'role-employee';
+            return 'role-devops';
+        }
+
         function renderTable(users) {
             const tbody = document.getElementById('usersTable');
             if (!users.length) {
@@ -118,13 +151,14 @@
                 <tr>
                     <td><strong>${esc(u.username)}</strong></td>
                     <td>${esc(u.email)}</td>
-                    <td><span class="${u.role === 'ADMIN' ? 'role-admin' : 'role-devops'}">${u.role}</span></td>
+                    <td><span class="${roleClass(u.role)}">${u.role}</span></td>
                     <td><span class="${u.enabled ? 'status-enabled' : 'status-disabled'}">${u.enabled ? 'Enabled' : 'Disabled'}</span></td>
                     <td class="text-muted text-sm">${formatDate(u.createdAt)}</td>
                     <td>
                         <div class="btn-group">
                             <button class="btn btn-ghost btn-sm" onclick="openEditModal('${u.id}','${esc(u.email)}','${esc(u.username)}','${u.role}',${u.enabled})">Edit</button>
                             <button class="btn btn-ghost btn-sm" onclick="openPasswordModal('${u.id}')">Password</button>
+                            ${u.role === 'EMPLOYEE' ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="openAccessModal('${u.id}','${esc(u.username)}')">Server Access</button>` : ''}
                             <button class="btn btn-ghost btn-sm" onclick="toggleUser('${u.id}',${u.enabled})">${u.enabled ? 'Disable' : 'Enable'}</button>
                             <button class="btn btn-danger btn-sm" onclick="deleteUser('${u.id}','${esc(u.username)}')">Delete</button>
                         </div>
@@ -261,6 +295,115 @@
             if (!res.ok) { showError('Failed to delete user'); return; }
             showSuccess('User deleted');
             loadUsers(currentPage);
+        }
+
+        // ══════════════════════════════════════
+        //  SERVER ACCESS MODAL
+        // ══════════════════════════════════════
+
+        let allServers = [];
+
+        async function openAccessModal(userId, username) {
+            document.getElementById('accessUserId').value = userId;
+            document.getElementById('accessUsername').textContent = username;
+            hideAlert('accessAlert');
+            document.getElementById('accessModal').classList.add('show');
+
+            // Load servers and current access in parallel
+            const [serversRes, accessRes] = await Promise.all([
+                apiFetch('/servers?size=200&sort=name,asc'),
+                apiFetch(`/users/${userId}/server-access`)
+            ]);
+
+            if (serversRes.ok) {
+                const data = await serversRes.json();
+                allServers = data.content || [];
+            }
+
+            if (accessRes.ok) {
+                const access = await accessRes.json();
+                renderCurrentAccess(access);
+                renderServerDropdown(access);
+            }
+        }
+
+        function closeAccessModal() {
+            document.getElementById('accessModal').classList.remove('show');
+        }
+
+        function renderCurrentAccess(accessList) {
+            const el = document.getElementById('currentAccessList');
+            if (!accessList.length) {
+                el.innerHTML = '<p class="text-muted text-sm">No servers assigned yet.</p>';
+                return;
+            }
+            el.innerHTML = `
+                <table style="width:100%;font-size:13px;">
+                    <thead><tr><th>Server</th><th>Assigned</th><th></th></tr></thead>
+                    <tbody>
+                        ${accessList.map(a => `
+                            <tr>
+                                <td><strong>${esc(a.serverName)}</strong></td>
+                                <td class="text-muted text-sm">${formatDate(a.assignedAt)}</td>
+                                <td><button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="revokeAccess('${a.serverId}','${esc(a.serverName)}')">Remove</button></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderServerDropdown(currentAccess) {
+            const assignedIds = new Set(currentAccess.map(a => a.serverId));
+            const available = allServers.filter(s => !assignedIds.has(s.id));
+            const sel = document.getElementById('serverSelect');
+            if (!available.length) {
+                sel.innerHTML = '<option value="">All servers assigned</option>';
+                return;
+            }
+            sel.innerHTML = '<option value="">Select a server...</option>' +
+                available.map(s => `<option value="${s.id}">${esc(s.name)} (${esc(s.environment)})</option>`).join('');
+        }
+
+        async function addServerAccess() {
+            const userId = document.getElementById('accessUserId').value;
+            const serverId = document.getElementById('serverSelect').value;
+            if (!serverId) { showError('Select a server', 'accessAlert'); return; }
+
+            const res = await apiFetch(`/users/${userId}/server-access`, {
+                method: 'POST',
+                body: JSON.stringify({ serverIds: [serverId] })
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                showError(err.message || 'Failed to assign server', 'accessAlert');
+                return;
+            }
+
+            showSuccess('Server access granted', 'accessAlert');
+            // Reload the access list
+            const accessRes = await apiFetch(`/users/${userId}/server-access`);
+            if (accessRes.ok) {
+                const access = await accessRes.json();
+                renderCurrentAccess(access);
+                renderServerDropdown(access);
+            }
+        }
+
+        async function revokeAccess(serverId, serverName) {
+            if (!confirm(`Remove access to "${serverName}"?`)) return;
+            const userId = document.getElementById('accessUserId').value;
+            const res = await apiFetch(`/users/${userId}/server-access/${serverId}`, { method: 'DELETE' });
+            if (!res.ok && res.status !== 204) { showError('Failed to revoke access', 'accessAlert'); return; }
+
+            showSuccess('Access revoked', 'accessAlert');
+            const accessRes = await apiFetch(`/users/${userId}/server-access`);
+            if (accessRes.ok) {
+                const access = await accessRes.json();
+                renderCurrentAccess(access);
+                renderServerDropdown(access);
+            }
         }
 
         function esc(str) {

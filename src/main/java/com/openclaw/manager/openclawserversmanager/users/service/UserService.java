@@ -8,6 +8,7 @@ import com.openclaw.manager.openclawserversmanager.users.dto.ChangePasswordReque
 import com.openclaw.manager.openclawserversmanager.users.dto.CreateUserRequest;
 import com.openclaw.manager.openclawserversmanager.users.dto.UpdateUserRequest;
 import com.openclaw.manager.openclawserversmanager.users.dto.UserResponse;
+import com.openclaw.manager.openclawserversmanager.users.entity.Role;
 import com.openclaw.manager.openclawserversmanager.users.entity.User;
 import com.openclaw.manager.openclawserversmanager.users.mapper.UserMapper;
 import com.openclaw.manager.openclawserversmanager.users.repository.UserRepository;
@@ -27,11 +28,15 @@ public class UserService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuditService auditService;
+    private final UserServerAccessService userServerAccessService;
 
-    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder, AuditService auditService) {
+    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder,
+                       AuditService auditService,
+                       @org.springframework.context.annotation.Lazy UserServerAccessService userServerAccessService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.auditService = auditService;
+        this.userServerAccessService = userServerAccessService;
     }
 
     @Transactional
@@ -86,6 +91,10 @@ public class UserService {
         }
 
         if (request.role() != null) {
+            // If changing FROM EMPLOYEE to another role, revoke server access
+            if (user.getRole() == Role.EMPLOYEE && request.role() != Role.EMPLOYEE) {
+                userServerAccessService.revokeAllForUser(id);
+            }
             user.setRole(request.role());
         }
 
@@ -123,6 +132,10 @@ public class UserService {
     public void deleteUser(UUID id) {
         User user = findUserOrThrow(id);
         String username = user.getUsername();
+        // Clean up server access (CASCADE handles DB, but this allows audit logging)
+        if (user.getRole() == Role.EMPLOYEE) {
+            userServerAccessService.revokeAllForUser(id);
+        }
         userRepository.delete(user);
 
         try { auditService.log(AuditAction.USER_DELETED, "USER", id, getCurrentUserId(),

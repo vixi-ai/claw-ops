@@ -130,6 +130,13 @@
         .file-item-name.file { color: var(--text-muted); }
         .file-item-size { font-size: 11px; color: var(--text-muted); font-family: var(--mono); flex-shrink: 0; }
         .file-item-parent { color: var(--text-muted); font-style: italic; }
+        .file-item-download {
+            background: none; border: none; color: var(--text-muted); cursor: pointer;
+            font-size: 13px; padding: 2px 4px; border-radius: 3px; flex-shrink: 0;
+            opacity: 0; transition: opacity 0.1s;
+        }
+        .file-item:hover .file-item-download { opacity: 1; }
+        .file-item-download:hover { background: var(--surface-hover); color: var(--primary); }
 
         .file-actions {
             display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border);
@@ -140,6 +147,27 @@
             padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: var(--font);
         }
         .file-actions button:hover { background: var(--surface-hover); color: var(--text); }
+
+        /* Drag-and-drop upload */
+        .file-list.drag-over {
+            background: rgba(88, 166, 255, 0.08);
+            border: 2px dashed var(--primary);
+            border-radius: 4px;
+        }
+        .upload-status {
+            padding: 6px 12px; font-size: 11px; color: var(--text-muted);
+            border-top: 1px solid var(--border); background: var(--surface);
+            display: none; align-items: center; gap: 8px;
+        }
+        .upload-status.visible { display: flex; }
+        .upload-status .upload-spinner {
+            width: 12px; height: 12px; border: 2px solid var(--border);
+            border-top-color: var(--primary); border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .upload-status.success { color: #7ee787; }
+        .upload-status.error { color: #ff7b72; }
     </style>
 </head>
 <body>
@@ -195,6 +223,10 @@
             <div class="file-breadcrumb" id="fileBreadcrumb">/</div>
             <div class="file-list" id="fileList">
                 <div class="file-list-loading">Select a server to browse files</div>
+            </div>
+            <div class="upload-status" id="uploadStatus">
+                <div class="upload-spinner"></div>
+                <span id="uploadStatusText">Uploading...</span>
             </div>
             <div class="file-actions">
                 <button onclick="refreshFiles()">Refresh</button>
@@ -620,10 +652,13 @@
                         const onclick = f.directory
                             ? `onclick="navigateTo('${esc(f.path)}')"`
                             : `onclick="cdToFile('${esc(f.path)}')"`;
+                        const downloadBtn = f.directory ? ''
+                            : `<button class="file-item-download" onclick="event.stopPropagation(); downloadFile('${esc(f.path)}')" title="Download">\u{2B07}</button>`;
                         html += `<div class="file-item" ${onclick}>
                             <span class="file-item-icon ${typeClass}">${icon}</span>
                             <span class="file-item-name ${typeClass}">${esc(f.name)}</span>
                             <span class="file-item-size">${size}</span>
+                            ${downloadBtn}
                         </div>`;
                     }
                 }
@@ -655,6 +690,99 @@
             ws.send(JSON.stringify({ type: 'INPUT', data: `cd ${dir} && ls -la ${name}\r` }));
             document.getElementById('terminalDisplay').focus();
         }
+
+        function downloadFile(remotePath) {
+            if (!selectedServerId) return;
+            const encodedPath = encodeURIComponent(remotePath);
+            const token = getToken();
+            const url = `${API_BASE}/servers/${selectedServerId}/sftp/download?path=${encodedPath}`;
+            fetch(url, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} })
+                .then(res => {
+                    if (!res.ok) return res.json().then(err => { throw new Error(err.message || 'Download failed'); });
+                    return res.blob();
+                })
+                .then(blob => {
+                    const name = remotePath.substring(remotePath.lastIndexOf('/') + 1);
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = name;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                })
+                .catch(err => showError(err.message));
+        }
+
+        // ── File Upload (Drag & Drop) ─────────────────
+        const fileListEl = document.getElementById('fileList');
+        let dragCounter = 0;
+
+        fileListEl.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            dragCounter++;
+            fileListEl.classList.add('drag-over');
+        });
+
+        fileListEl.addEventListener('dragover', (e) => {
+            e.preventDefault();
+        });
+
+        fileListEl.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dragCounter--;
+            if (dragCounter <= 0) {
+                dragCounter = 0;
+                fileListEl.classList.remove('drag-over');
+            }
+        });
+
+        fileListEl.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            dragCounter = 0;
+            fileListEl.classList.remove('drag-over');
+
+            if (!selectedServerId) { showError('Select a server first'); return; }
+            const files = e.dataTransfer.files;
+            if (!files.length) return;
+
+            const statusEl = document.getElementById('uploadStatus');
+            const statusText = document.getElementById('uploadStatusText');
+            statusEl.className = 'upload-status visible';
+            statusText.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}...`;
+
+            let uploaded = 0, failed = 0;
+            for (const file of files) {
+                try {
+                    const form = new FormData();
+                    form.append('file', file);
+                    const encodedPath = encodeURIComponent(currentFilePath);
+                    const token = getToken();
+                    const res = await fetch(`${API_BASE}/servers/${selectedServerId}/sftp/upload?path=${encodedPath}`, {
+                        method: 'POST',
+                        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+                        body: form
+                    });
+                    if (res.ok) { uploaded++; }
+                    else {
+                        failed++;
+                        const err = await res.json();
+                        console.error('Upload failed:', file.name, err.message);
+                    }
+                } catch (err) {
+                    failed++;
+                    console.error('Upload error:', file.name, err);
+                }
+            }
+
+            if (failed === 0) {
+                statusEl.className = 'upload-status visible success';
+                statusText.textContent = `Uploaded ${uploaded} file${uploaded > 1 ? 's' : ''}`;
+            } else {
+                statusEl.className = 'upload-status visible error';
+                statusText.textContent = `${uploaded} uploaded, ${failed} failed`;
+            }
+            setTimeout(() => { statusEl.className = 'upload-status'; }, 3000);
+            refreshFiles();
+        });
 
         // ── Utils ──────────────────────────────────────
         function esc(str) {

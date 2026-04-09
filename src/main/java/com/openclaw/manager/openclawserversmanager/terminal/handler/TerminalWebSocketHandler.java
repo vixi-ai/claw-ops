@@ -47,6 +47,8 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
     private final ConcurrentHashMap<String, TerminalSession> wsSessionMap = new ConcurrentHashMap<>();
     // terminalSessionId -> active WebSocketSession (for deployment sessions)
     private final ConcurrentHashMap<String, WebSocketSession> deploymentWsSessions = new ConcurrentHashMap<>();
+    // terminalSessionId -> active WebSocketSession (for persistent sessions)
+    private final ConcurrentHashMap<String, WebSocketSession> persistentWsSessions = new ConcurrentHashMap<>();
 
     public TerminalWebSocketHandler(TerminalSessionService terminalSessionService,
                                      InteractiveDeploymentService interactiveDeploymentService,
@@ -78,6 +80,12 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         }
 
         String mode = params.get("mode");
+
+        // Persistent session (new or reconnection)
+        if ("persistent".equals(mode) && tokenInfo.isPersistentToken()) {
+            handlePersistentConnection(wsSession, tokenInfo);
+            return;
+        }
 
         // Deployment reconnection
         if ("deployment".equals(mode) && tokenInfo.isReconnectionToken()) {
@@ -192,6 +200,35 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         log.info("Deployment terminal reconnected for job {}", tokenInfo.jobId());
     }
 
+    private void handlePersistentConnection(WebSocketSession wsSession, SessionTokenInfo tokenInfo) throws IOException {
+        TerminalSession terminalSession = terminalSessionService.getSession(tokenInfo.existingSessionId());
+        if (terminalSession == null || !terminalSession.isPersistentSession()) {
+            wsSession.close(new CloseStatus(4005, "Persistent session not found or expired"));
+            return;
+        }
+
+        if (!terminalSession.getSshSession().isConnected()) {
+            wsSession.close(new CloseStatus(4005, "Persistent session SSH connection lost"));
+            return;
+        }
+
+        wsSessionMap.put(wsSession.getId(), terminalSession);
+        persistentWsSessions.put(terminalSession.getSessionId(), wsSession);
+        terminalSession.touch();
+
+        // Replay buffered output
+        String buffered = terminalSession.getBufferedOutput();
+        if (!buffered.isEmpty()) {
+            sendMessage(wsSession, new TerminalOutput("OUTPUT", buffered));
+        }
+
+        // Start streaming (reads SSH output → sends to WS + buffers)
+        Thread.ofVirtual().name("persistent-stream-" + terminalSession.getSessionId()).start(() ->
+                streamPersistentOutput(wsSession, terminalSession));
+
+        log.info("Persistent terminal connected for session {}", terminalSession.getSessionId());
+    }
+
     @Override
     protected void handleTextMessage(WebSocketSession wsSession, TextMessage message) throws Exception {
         TerminalSession terminalSession = wsSessionMap.get(wsSession.getId());
@@ -221,6 +258,18 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession wsSession, CloseStatus status) {
         TerminalSession terminalSession = wsSessionMap.remove(wsSession.getId());
         if (terminalSession == null) {
+            return;
+        }
+
+        // Persistent sessions: detach WebSocket, keep SSH alive, start background buffer reader
+        if (terminalSession.isPersistentSession()) {
+            persistentWsSessions.remove(terminalSession.getSessionId());
+            if (terminalSession.getSshSession().isConnected()) {
+                Thread.ofVirtual().name("persistent-bg-" + terminalSession.getSessionId()).start(() ->
+                        backgroundBufferPersistent(terminalSession));
+            }
+            log.info("Persistent terminal detached for session {} (SSH stays alive)",
+                    terminalSession.getSessionId());
             return;
         }
 
@@ -262,7 +311,9 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         log.error("WebSocket transport error for session {}: {}", wsSession.getId(), exception.getMessage());
         TerminalSession terminalSession = wsSessionMap.remove(wsSession.getId());
         if (terminalSession != null) {
-            if (terminalSession.isDeploymentSession()) {
+            if (terminalSession.isPersistentSession()) {
+                persistentWsSessions.remove(terminalSession.getSessionId());
+            } else if (terminalSession.isDeploymentSession()) {
                 deploymentWsSessions.remove(terminalSession.getSessionId());
             } else {
                 terminalSessionService.removeSession(terminalSession.getSessionId());
@@ -372,6 +423,64 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         if (ws != null && ws.isOpen()) {
             sendMessage(ws, new TerminalOutput("DEPLOYMENT_COMPLETE", "Script has finished"));
         }
+    }
+
+    // ── Persistent terminal: SSH stream → WebSocket + buffer ──
+
+    private void streamPersistentOutput(WebSocketSession wsSession, TerminalSession terminalSession) {
+        try {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            InputStream in = terminalSession.getSshSession().getInputStream();
+            while ((bytesRead = in.read(buffer)) != -1) {
+                String output = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
+                terminalSession.appendToBuffer(output);
+
+                WebSocketSession ws = persistentWsSessions.get(terminalSession.getSessionId());
+                if (ws != null && ws.isOpen()) {
+                    sendMessage(ws, new TerminalOutput("OUTPUT", output));
+                }
+
+                // WebSocket disconnected — switch to background buffering
+                if (ws == null || !ws.isOpen()) {
+                    backgroundBufferPersistent(terminalSession);
+                    return;
+                }
+            }
+        } catch (IOException e) {
+            log.debug("SSH stream ended for persistent session {}", terminalSession.getSessionId());
+        }
+
+        // SSH stream ended — notify attached client
+        WebSocketSession ws = persistentWsSessions.get(terminalSession.getSessionId());
+        if (ws != null && ws.isOpen()) {
+            sendMessage(ws, new TerminalOutput("CLOSED", "Session ended"));
+        }
+        terminalSessionService.removeSession(terminalSession.getSessionId());
+    }
+
+    private void backgroundBufferPersistent(TerminalSession terminalSession) {
+        try {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            InputStream in = terminalSession.getSshSession().getInputStream();
+            while ((bytesRead = in.read(buffer)) != -1) {
+                String output = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
+                terminalSession.appendToBuffer(output);
+
+                // If a WebSocket reconnected, hand off to streamPersistentOutput
+                WebSocketSession ws = persistentWsSessions.get(terminalSession.getSessionId());
+                if (ws != null && ws.isOpen()) {
+                    return; // Reconnection handler starts a new streamPersistentOutput
+                }
+            }
+        } catch (IOException e) {
+            log.debug("SSH stream ended during background buffering for persistent session {}",
+                    terminalSession.getSessionId());
+        }
+
+        // SSH died while disconnected — clean up
+        terminalSessionService.removeSession(terminalSession.getSessionId());
     }
 
     private void sendMessage(WebSocketSession wsSession, TerminalOutput output) {
