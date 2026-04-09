@@ -155,20 +155,19 @@ public class ServerController {
 
     @GetMapping("/{id}/sftp/download")
     @Operation(summary = "Download a file from a remote server via SFTP (streamed)")
-    public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> downloadFile(
-            @PathVariable UUID id,
-            @RequestParam String path,
-            Authentication authentication) {
+    public void downloadFile(@PathVariable UUID id,
+                             @RequestParam String path,
+                             Authentication authentication,
+                             jakarta.servlet.http.HttpServletResponse response) throws IOException {
         UUID userId = (UUID) authentication.getPrincipal();
         serverService.checkServerAccess(id, userId, extractRole(authentication));
         var server = serverService.getServerEntity(id);
         String fileName = path.contains("/") ? path.substring(path.lastIndexOf('/') + 1) : path;
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-        headers.setContentDisposition(ContentDisposition.attachment().filename(fileName).build());
-        org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody body =
-                out -> sshService.downloadFileStreaming(server, path, out);
-        return new ResponseEntity<>(body, headers, HttpStatus.OK);
+        response.setContentType("application/octet-stream");
+        response.setHeader("Content-Disposition",
+                ContentDisposition.attachment().filename(fileName).build().toString());
+        sshService.downloadFileStreaming(server, path, response.getOutputStream());
+        response.flushBuffer();
     }
 
     @GetMapping("/{id}/ssh/session-token")
