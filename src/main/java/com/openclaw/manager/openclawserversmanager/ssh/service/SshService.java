@@ -228,6 +228,8 @@ public class SshService {
         SSHClient ssh = null;
         try {
             ssh = createClient(server);
+            // Send SSH keepalive every 30s to detect dead connections promptly
+            ssh.getConnection().getKeepAlive().setKeepAliveInterval(30);
             Session session = ssh.startSession();
             session.allocatePTY("xterm-256color", cols, rows, 0, 0, Collections.emptyMap());
             Session.Shell shell = session.startShell();

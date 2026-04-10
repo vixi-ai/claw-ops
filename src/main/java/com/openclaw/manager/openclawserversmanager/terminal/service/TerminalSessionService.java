@@ -131,8 +131,11 @@ public class TerminalSessionService {
                 continue;
             }
 
-            // Skip persistent sessions that are still connected
-            if (session.isPersistentSession() && session.getSshSession().isConnected()) {
+            // Skip persistent sessions that are connected AND recently active
+            // (stale connections where isConnected() returns true but SSH is dead
+            // will be cleaned up after the inactivity timeout)
+            if (session.isPersistentSession() && session.getSshSession().isConnected()
+                    && session.getLastActivityAt().isAfter(cutoff)) {
                 continue;
             }
 

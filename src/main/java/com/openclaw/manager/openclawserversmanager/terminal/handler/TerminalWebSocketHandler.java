@@ -314,6 +314,14 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         if (terminalSession != null) {
             if (terminalSession.isPersistentSession()) {
                 persistentWsSessions.remove(terminalSession.getSessionId());
+                // Start background buffer so SSH stays alive for reconnection;
+                // if SSH is already dead, buffer will exit immediately and clean up
+                if (terminalSession.getSshSession().isConnected()) {
+                    Thread.ofVirtual().name("persistent-bg-" + terminalSession.getSessionId()).start(() ->
+                            backgroundBufferPersistent(terminalSession));
+                } else {
+                    terminalSessionService.removeSession(terminalSession.getSessionId());
+                }
             } else if (terminalSession.isDeploymentSession()) {
                 deploymentWsSessions.remove(terminalSession.getSessionId());
             } else {
@@ -436,6 +444,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             while ((bytesRead = in.read(buffer)) != -1) {
                 String output = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
                 terminalSession.appendToBuffer(output);
+                terminalSession.touch(); // Keep session alive while output is flowing
 
                 WebSocketSession ws = persistentWsSessions.get(terminalSession.getSessionId());
                 if (ws != null && ws.isOpen()) {
@@ -468,6 +477,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             while ((bytesRead = in.read(buffer)) != -1) {
                 String output = new String(buffer, 0, bytesRead, StandardCharsets.UTF_8);
                 terminalSession.appendToBuffer(output);
+                terminalSession.touch(); // Keep session alive while output is flowing
 
                 // If a WebSocket reconnected, hand off to streamPersistentOutput
                 WebSocketSession ws = persistentWsSessions.get(terminalSession.getSessionId());
