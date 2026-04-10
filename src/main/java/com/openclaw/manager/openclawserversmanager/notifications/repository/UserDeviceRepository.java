@@ -4,11 +4,14 @@ import com.openclaw.manager.openclawserversmanager.notifications.entity.UserDevi
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface UserDeviceRepository extends JpaRepository<UserDevice, UUID> {
 
     List<UserDevice> findByUserId(UUID userId);
+
+    Optional<UserDevice> findByUserIdAndDeviceName(UUID userId, String deviceName);
 
     List<UserDevice> findByUserIdAndNotificationsEnabledTrue(UUID userId);
 

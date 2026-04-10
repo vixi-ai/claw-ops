@@ -7,6 +7,7 @@ import com.openclaw.manager.openclawserversmanager.notifications.entity.Notifica
 import com.openclaw.manager.openclawserversmanager.notifications.entity.NotificationProviderType;
 import com.openclaw.manager.openclawserversmanager.notifications.service.FirebaseService;
 import com.openclaw.manager.openclawserversmanager.notifications.service.NotificationProviderService;
+import com.openclaw.manager.openclawserversmanager.notifications.service.WebPushService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -36,11 +37,14 @@ public class NotificationProviderController {
 
     private final NotificationProviderService providerService;
     private final FirebaseService firebaseService;
+    private final WebPushService webPushService;
 
     public NotificationProviderController(NotificationProviderService providerService,
-                                          FirebaseService firebaseService) {
+                                          FirebaseService firebaseService,
+                                          WebPushService webPushService) {
         this.providerService = providerService;
         this.firebaseService = firebaseService;
+        this.webPushService = webPushService;
     }
 
     @PostMapping
@@ -91,6 +95,10 @@ public class NotificationProviderController {
                 String projectId = firebaseService.validateCredentials(provider);
                 return ResponseEntity.ok(Map.of("valid", true, "message",
                         "Firebase credentials valid (project: %s)".formatted(projectId)));
+            }
+            if (provider.getProviderType() == NotificationProviderType.WEB_PUSH) {
+                webPushService.validateVapidKeys(provider);
+                return ResponseEntity.ok(Map.of("valid", true, "message", "VAPID keys are valid"));
             }
             return ResponseEntity.ok(Map.of("valid", true, "message", "Provider type does not require validation"));
         } catch (Exception e) {

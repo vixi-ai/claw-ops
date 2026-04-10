@@ -69,6 +69,12 @@ public class NotificationController {
         return ResponseEntity.ok(Map.of("publicKey", webPushService.getVapidPublicKey()));
     }
 
+    @PostMapping("/generate-vapid-keys")
+    @Operation(summary = "Generate a new VAPID key pair for Web Push")
+    public ResponseEntity<Map<String, String>> generateVapidKeys() {
+        return ResponseEntity.ok(webPushService.generateVapidKeys());
+    }
+
     @GetMapping("/fcm-config")
     @Operation(summary = "Get the Firebase web config for client-side FCM initialization")
     public ResponseEntity<Map<String, Object>> getFcmConfig() {
@@ -146,11 +152,13 @@ public class NotificationController {
     @Operation(summary = "Enable or disable notifications for a device")
     public ResponseEntity<UserDeviceResponse> toggleDeviceNotifications(
             @PathVariable UUID id,
-            @RequestBody Map<String, Boolean> body,
+            @RequestBody com.openclaw.manager.openclawserversmanager.notifications.dto.ToggleDeviceRequest request,
             Authentication authentication) {
         UUID userId = (UUID) authentication.getPrincipal();
-        boolean enabled = body.getOrDefault("enabled", true);
-        return ResponseEntity.ok(userDeviceService.toggleNotifications(id, enabled, userId));
+        return ResponseEntity.ok(userDeviceService.toggleNotifications(
+                id, request.enabled(), userId,
+                request.fcmToken(), request.pushEndpoint(),
+                request.pushKeyAuth(), request.pushKeyP256dh()));
     }
 
     @DeleteMapping("/devices/{id}")

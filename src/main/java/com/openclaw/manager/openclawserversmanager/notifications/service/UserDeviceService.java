@@ -11,6 +11,9 @@ import com.openclaw.manager.openclawserversmanager.notifications.entity.UserDevi
 import com.openclaw.manager.openclawserversmanager.notifications.repository.DeviceTokenRepository;
 import com.openclaw.manager.openclawserversmanager.notifications.repository.PushSubscriptionRepository;
 import com.openclaw.manager.openclawserversmanager.notifications.repository.UserDeviceRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +22,8 @@ import java.util.UUID;
 
 @Service
 public class UserDeviceService {
+
+    private static final Logger log = LoggerFactory.getLogger(UserDeviceService.class);
 
     private final UserDeviceRepository deviceRepository;
     private final PushSubscriptionRepository pushSubscriptionRepository;
@@ -37,39 +42,36 @@ public class UserDeviceService {
 
     @Transactional
     public UserDeviceResponse registerDevice(RegisterDeviceRequest request, UUID userId) {
-        UserDevice device = new UserDevice();
-        device.setUserId(userId);
-        device.setDeviceName(request.deviceName());
-        device.setPlatform(request.platform());
-        device.setNotificationsEnabled(true);
-        UserDevice saved = deviceRepository.save(device);
+        // Upsert: reuse existing device for same user + device name
+        UserDevice device = deviceRepository.findByUserIdAndDeviceName(userId, request.deviceName())
+                .orElse(null);
 
-        NotificationProvider provider = providerService.getDefaultProvider();
-
-        // Register the push subscription or FCM token linked to this device
-        if (provider.getProviderType() == NotificationProviderType.FCM && request.fcmToken() != null) {
-            DeviceToken dt = deviceTokenRepository.findByTokenAndProviderId(request.fcmToken(), provider.getId())
-                    .orElse(new DeviceToken());
-            dt.setToken(request.fcmToken());
-            dt.setPlatform(request.platform());
-            dt.setUserId(userId);
-            dt.setProviderId(provider.getId());
-            dt.setDeviceId(saved.getId());
-            deviceTokenRepository.save(dt);
-        } else if (provider.getProviderType() == NotificationProviderType.WEB_PUSH
-                && request.pushEndpoint() != null) {
-            PushSubscription sub = pushSubscriptionRepository.findByEndpoint(request.pushEndpoint())
-                    .orElse(new PushSubscription());
-            sub.setEndpoint(request.pushEndpoint());
-            sub.setKeyAuth(request.pushKeyAuth());
-            sub.setKeyP256dh(request.pushKeyP256dh());
-            sub.setUserId(userId);
-            sub.setProviderId(provider.getId());
-            sub.setDeviceId(saved.getId());
-            pushSubscriptionRepository.save(sub);
+        if (device != null) {
+            device.setNotificationsEnabled(true);
+            device.setPlatform(request.platform());
+            device = deviceRepository.save(device);
+        } else {
+            device = new UserDevice();
+            device.setUserId(userId);
+            device.setDeviceName(request.deviceName());
+            device.setPlatform(request.platform());
+            device.setNotificationsEnabled(true);
+            try {
+                device = deviceRepository.save(device);
+            } catch (DataIntegrityViolationException e) {
+                // Concurrent registration — fetch existing
+                device = deviceRepository.findByUserIdAndDeviceName(userId, request.deviceName())
+                        .orElseThrow(() -> new ResourceNotFoundException("Device registration conflict"));
+                device.setNotificationsEnabled(true);
+                device = deviceRepository.save(device);
+            }
         }
 
-        return toResponse(saved);
+        NotificationProvider provider = providerService.getDefaultProvider();
+        linkTokenToDevice(request.fcmToken(), request.pushEndpoint(), request.pushKeyAuth(),
+                request.pushKeyP256dh(), request.platform(), userId, provider, device.getId());
+
+        return toResponse(device);
     }
 
     public List<UserDeviceResponse> getUserDevices(UUID userId) {
@@ -79,12 +81,23 @@ public class UserDeviceService {
     }
 
     @Transactional
-    public UserDeviceResponse toggleNotifications(UUID deviceId, boolean enabled, UUID userId) {
+    public UserDeviceResponse toggleNotifications(UUID deviceId, boolean enabled, UUID userId,
+                                                   String fcmToken, String pushEndpoint,
+                                                   String pushKeyAuth, String pushKeyP256dh) {
         UserDevice device = deviceRepository.findById(deviceId)
                 .filter(d -> d.getUserId().equals(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Device not found: " + deviceId));
         device.setNotificationsEnabled(enabled);
-        return toResponse(deviceRepository.save(device));
+        device = deviceRepository.save(device);
+
+        // When re-enabling with fresh token, update the linked subscription
+        if (enabled) {
+            NotificationProvider provider = providerService.getDefaultProvider();
+            linkTokenToDevice(fcmToken, pushEndpoint, pushKeyAuth, pushKeyP256dh,
+                    device.getPlatform(), userId, provider, device.getId());
+        }
+
+        return toResponse(device);
     }
 
     @Transactional
@@ -93,23 +106,64 @@ public class UserDeviceService {
                 .filter(d -> d.getUserId().equals(userId))
                 .orElseThrow(() -> new ResourceNotFoundException("Device not found: " + deviceId));
 
-        // Clean up linked subscriptions/tokens (device_id is SET NULL on delete, but let's be explicit)
         pushSubscriptionRepository.findByDeviceId(deviceId).ifPresent(pushSubscriptionRepository::delete);
         deviceTokenRepository.findByDeviceId(deviceId).ifPresent(deviceTokenRepository::delete);
 
         deviceRepository.delete(device);
     }
 
-    /**
-     * Get device IDs for a user that have notifications disabled.
-     * Used by send services to filter out disabled devices.
-     */
     public List<UUID> getDisabledDeviceIds() {
-        // Return all device IDs that have notifications disabled
         return deviceRepository.findAll().stream()
                 .filter(d -> !d.isNotificationsEnabled())
                 .map(UserDevice::getId)
                 .toList();
+    }
+
+    // ── Private helpers ──
+
+    private void linkTokenToDevice(String fcmToken, String pushEndpoint, String pushKeyAuth,
+                                    String pushKeyP256dh, String platform, UUID userId,
+                                    NotificationProvider provider, UUID deviceId) {
+        if (provider.getProviderType() == NotificationProviderType.FCM
+                && fcmToken != null && !fcmToken.isBlank()) {
+            upsertDeviceToken(fcmToken, platform, userId, provider, deviceId);
+        } else if (provider.getProviderType() == NotificationProviderType.WEB_PUSH
+                && pushEndpoint != null && !pushEndpoint.isBlank()) {
+            upsertPushSubscription(pushEndpoint, pushKeyAuth, pushKeyP256dh, userId, provider, deviceId);
+        }
+    }
+
+    private void upsertDeviceToken(String token, String platform, UUID userId,
+                                    NotificationProvider provider, UUID deviceId) {
+        // Remove any old token linked to this device (token refresh)
+        deviceTokenRepository.findByDeviceId(deviceId).ifPresent(deviceTokenRepository::delete);
+
+        DeviceToken dt = deviceTokenRepository.findByTokenAndProviderId(token, provider.getId())
+                .orElse(new DeviceToken());
+        dt.setToken(token);
+        dt.setPlatform(platform);
+        dt.setUserId(userId);
+        dt.setProviderId(provider.getId());
+        dt.setDeviceId(deviceId);
+        deviceTokenRepository.save(dt);
+        log.info("Linked FCM token to device {} (provider: {})", deviceId, provider.getDisplayName());
+    }
+
+    private void upsertPushSubscription(String endpoint, String keyAuth, String keyP256dh,
+                                         UUID userId, NotificationProvider provider, UUID deviceId) {
+        // Remove any old subscription linked to this device
+        pushSubscriptionRepository.findByDeviceId(deviceId).ifPresent(pushSubscriptionRepository::delete);
+
+        PushSubscription sub = pushSubscriptionRepository.findByEndpoint(endpoint)
+                .orElse(new PushSubscription());
+        sub.setEndpoint(endpoint);
+        sub.setKeyAuth(keyAuth);
+        sub.setKeyP256dh(keyP256dh);
+        sub.setUserId(userId);
+        sub.setProviderId(provider.getId());
+        sub.setDeviceId(deviceId);
+        pushSubscriptionRepository.save(sub);
+        log.info("Linked push subscription to device {} (provider: {})", deviceId, provider.getDisplayName());
     }
 
     private UserDeviceResponse toResponse(UserDevice device) {

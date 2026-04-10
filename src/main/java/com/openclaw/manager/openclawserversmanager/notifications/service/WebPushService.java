@@ -49,6 +49,33 @@ public class WebPushService implements NotificationSender {
         this.userDeviceService = userDeviceService;
     }
 
+    /**
+     * Generate a new VAPID key pair for Web Push providers.
+     * Returns { publicKey, privateKey } in URL-safe Base64 encoding.
+     */
+    public Map<String, String> generateVapidKeys() {
+        try {
+            java.security.KeyPairGenerator keyGen = java.security.KeyPairGenerator.getInstance("EC", "BC");
+            keyGen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+            java.security.KeyPair keyPair = keyGen.generateKeyPair();
+
+            org.bouncycastle.jce.interfaces.ECPublicKey bcPub =
+                    (org.bouncycastle.jce.interfaces.ECPublicKey) keyPair.getPublic();
+            org.bouncycastle.jce.interfaces.ECPrivateKey bcPriv =
+                    (org.bouncycastle.jce.interfaces.ECPrivateKey) keyPair.getPrivate();
+
+            byte[] publicBytes = nl.martijndwars.webpush.Utils.encode(bcPub);
+            byte[] privateBytes = nl.martijndwars.webpush.Utils.encode(bcPriv);
+
+            String publicKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(publicBytes);
+            String privateKey = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(privateBytes);
+
+            return Map.of("publicKey", publicKey, "privateKey", privateKey);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to generate VAPID keys: " + e.getMessage(), e);
+        }
+    }
+
     @Transactional
     public PushSubscription subscribe(String endpoint, String keyAuth, String keyP256dh, UUID userId) {
         NotificationProvider provider = providerService.getDefaultProvider();
@@ -135,6 +162,13 @@ public class WebPushService implements NotificationSender {
         log.info("Sent push notification to {}/{} subscribers (provider: {})",
                 sent, subs.size(), provider.getDisplayName());
         return sent;
+    }
+
+    /**
+     * Validate VAPID keys by attempting to initialize a PushService.
+     */
+    public void validateVapidKeys(NotificationProvider provider) {
+        buildPushService(provider); // Throws if keys are invalid
     }
 
     /**
