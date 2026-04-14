@@ -1,5 +1,6 @@
 package com.openclaw.manager.openclawserversmanager.domains.service;
 
+import com.openclaw.manager.openclawserversmanager.common.validation.HostnameValidator;
 import com.openclaw.manager.openclawserversmanager.domains.entity.DnsRecordType;
 import com.openclaw.manager.openclawserversmanager.domains.entity.DomainAssignment;
 import com.openclaw.manager.openclawserversmanager.domains.entity.ManagedZone;
@@ -115,6 +116,7 @@ public class AcmeService {
      */
     public CertbotResult runCertbotWithDns01(Server server, DomainAssignment assignment,
                                               String hostname, String adminEmail) {
+        HostnameValidator.requireValid(hostname);
         String signalDir = "/tmp/openclaw-acme";
         String safeHostname = hostname.replace(".", "-");
 

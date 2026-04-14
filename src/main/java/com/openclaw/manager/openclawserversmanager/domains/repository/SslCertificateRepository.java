@@ -4,6 +4,7 @@ import com.openclaw.manager.openclawserversmanager.domains.entity.SslCertificate
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,4 +24,10 @@ public interface SslCertificateRepository extends JpaRepository<SslCertificate, 
     List<SslCertificate> findByAssignmentIdIn(List<UUID> assignmentIds);
 
     void deleteByServerId(UUID serverId);
+
+    List<SslCertificate> findByStatusAndExpiresAtBefore(SslStatus status, Instant expiresAt);
+
+    long countByStatus(SslStatus status);
+
+    long countByStatusAndExpiresAtBefore(SslStatus status, Instant expiresAt);
 }

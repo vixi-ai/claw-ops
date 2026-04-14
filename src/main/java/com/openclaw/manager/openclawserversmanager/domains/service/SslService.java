@@ -4,6 +4,7 @@ import com.openclaw.manager.openclawserversmanager.audit.entity.AuditAction;
 import com.openclaw.manager.openclawserversmanager.audit.service.AuditService;
 import com.openclaw.manager.openclawserversmanager.common.exception.ResourceNotFoundException;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslCertificateResponse;
+import com.openclaw.manager.openclawserversmanager.domains.dto.SslDashboardResponse;
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslCertificate;
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslStatus;
 import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
@@ -22,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -95,7 +97,9 @@ public class SslService {
                 throw new DomainException("Certbot renew failed: " + result.stderr());
             }
 
-            cert.setExpiresAt(Instant.now().plus(90, ChronoUnit.DAYS));
+            // Read actual expiry from certbot after renewal
+            Instant newExpiry = readCertExpiry(server, cert.getHostname());
+            cert.setExpiresAt(newExpiry != null ? newExpiry : Instant.now().plus(90, ChronoUnit.DAYS));
             cert.setLastRenewedAt(Instant.now());
             cert.setStatus(SslStatus.ACTIVE);
             cert.setLastError(null);
@@ -208,6 +212,58 @@ public class SslService {
                 sslCertificateRepository.delete(cert);
             }
         });
+    }
+
+    // ── Dashboard ──────────────────────────────
+
+    public SslDashboardResponse getDashboard() {
+        long total = sslCertificateRepository.count();
+        long active = sslCertificateRepository.countByStatus(SslStatus.ACTIVE);
+        long expired = sslCertificateRepository.countByStatus(SslStatus.EXPIRED);
+        long failed = sslCertificateRepository.countByStatus(SslStatus.FAILED);
+        long provisioning = sslCertificateRepository.countByStatus(SslStatus.PROVISIONING);
+
+        Instant soonThreshold = Instant.now().plus(14, ChronoUnit.DAYS);
+        List<SslCertificate> expiringSoonCerts = sslCertificateRepository
+                .findByStatusAndExpiresAtBefore(SslStatus.ACTIVE, soonThreshold);
+
+        List<SslDashboardResponse.ExpiringSoonEntry> expiringSoon = expiringSoonCerts.stream()
+                .map(cert -> new SslDashboardResponse.ExpiringSoonEntry(
+                        cert.getHostname(),
+                        cert.getExpiresAt(),
+                        cert.getExpiresAt() != null
+                                ? ChronoUnit.DAYS.between(Instant.now(), cert.getExpiresAt())
+                                : 0
+                ))
+                .toList();
+
+        List<SslDashboardResponse.RecentFailure> recentFailures = sslCertificateRepository
+                .findByStatus(SslStatus.FAILED).stream()
+                .filter(cert -> cert.getLastError() != null)
+                .limit(10)
+                .map(cert -> new SslDashboardResponse.RecentFailure(cert.getHostname(), cert.getLastError()))
+                .toList();
+
+        return new SslDashboardResponse(
+                total, active, expired, expiringSoon.size(), failed, provisioning,
+                expiringSoon, recentFailures
+        );
+    }
+
+    private Instant readCertExpiry(Server server, String hostname) {
+        try {
+            CommandResult result = sshService.executeCommand(server,
+                    "sudo certbot certificates --cert-name %s".formatted(hostname), 60);
+            if (result.exitCode() == 0) {
+                Matcher matcher = EXPIRY_PATTERN.matcher(result.stdout());
+                if (matcher.find()) {
+                    return Instant.parse(matcher.group(1) + "T00:00:00Z");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read cert expiry for {}: {}", hostname, e.getMessage());
+        }
+        return null;
     }
 
     private SslCertificate findCertOrThrow(UUID id) {

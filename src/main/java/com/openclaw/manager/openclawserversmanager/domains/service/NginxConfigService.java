@@ -1,5 +1,6 @@
 package com.openclaw.manager.openclawserversmanager.domains.service;
 
+import com.openclaw.manager.openclawserversmanager.common.validation.HostnameValidator;
 import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
 import com.openclaw.manager.openclawserversmanager.servers.entity.Server;
 import com.openclaw.manager.openclawserversmanager.ssh.model.CommandResult;
@@ -29,10 +30,32 @@ public class NginxConfigService {
                 return 301 https://$host$request_uri;
             }
             server {
-                listen 443 ssl;
+                listen 443 ssl http2;
                 server_name %s;
+
                 ssl_certificate /etc/letsencrypt/live/%s/fullchain.pem;
                 ssl_certificate_key /etc/letsencrypt/live/%s/privkey.pem;
+
+                # SSL hardening
+                ssl_protocols TLSv1.2 TLSv1.3;
+                ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+                ssl_prefer_server_ciphers off;
+                ssl_session_cache shared:SSL:10m;
+                ssl_session_timeout 1d;
+                ssl_session_tickets off;
+
+                # OCSP stapling
+                ssl_stapling on;
+                ssl_stapling_verify on;
+                ssl_trusted_certificate /etc/letsencrypt/live/%s/chain.pem;
+                resolver 1.1.1.1 8.8.8.8 valid=300s;
+                resolver_timeout 5s;
+
+                # Security headers
+                add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+                add_header X-Content-Type-Options nosniff always;
+                add_header X-Frame-Options SAMEORIGIN always;
+
                 location / {
                     proxy_pass http://127.0.0.1:%d;
                     proxy_set_header Host $host;
@@ -89,9 +112,10 @@ public class NginxConfigService {
      * Generates and deploys /etc/nginx/openclaw-managed/{hostname}.conf with HTTPS reverse proxy + WSS.
      */
     public void deployConfig(Server server, String hostname, String assignmentId, int targetPort) {
+        HostnameValidator.requireValid(hostname);
         String config = NGINX_HTTPS_CONFIG_TEMPLATE.formatted(
                 hostname, assignmentId, Instant.now().toString(),
-                hostname, hostname, hostname, hostname, targetPort
+                hostname, hostname, hostname, hostname, hostname, targetPort
         );
 
         String remotePath = MANAGED_DIR + "/" + hostname + ".conf";

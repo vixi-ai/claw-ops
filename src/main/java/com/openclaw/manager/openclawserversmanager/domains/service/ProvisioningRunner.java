@@ -88,10 +88,12 @@ public class ProvisioningRunner {
 
         try {
             // Step 1: Ensure nginx installed
+            if (isCancelled(job)) return;
             updateStep(job, ProvisioningStep.PENDING_DNS, "Ensuring nginx + certbot are installed");
             acmeService.ensureNginxInstalled(server);
 
             // Step 2: Run certbot DNS-01 (handles TXT record creation, propagation, and cert issuance)
+            if (isCancelled(job)) return;
             updateStep(job, ProvisioningStep.DNS_CREATED, "Running certbot DNS-01 challenge (creates TXT, waits for propagation, issues cert)");
             AcmeService.CertbotResult certbotResult = acmeService.runCertbotWithDns01(server, assignment, hostname, email);
 
@@ -115,6 +117,7 @@ public class ProvisioningRunner {
             updateStep(job, ProvisioningStep.CERT_ISSUED, "Certificate issued successfully");
 
             // Step 3: Deploy nginx config
+            if (isCancelled(job)) return;
             updateStep(job, ProvisioningStep.DEPLOYING_CONFIG, "Deploying nginx HTTPS config");
             nginxConfigService.ensureManagedDirectory(server);
             int targetPort = sslConfig.getTargetPort();
@@ -135,6 +138,7 @@ public class ProvisioningRunner {
             }
 
             // Step 4: Verify HTTPS
+            if (isCancelled(job)) return;
             updateStep(job, ProvisioningStep.VERIFYING, "Verifying HTTPS endpoint and TLS certificate");
             SslVerificationService.VerificationResult verification = verificationService.verify(server, hostname);
             job.appendLog("Verification: HTTPS=%s, TLS=%s, expiry=%s".formatted(
@@ -196,6 +200,12 @@ public class ProvisioningRunner {
         job.appendLog("[%s] %s".formatted(step.name(), message));
         jobRepository.save(job);
         log.info("Provisioning job {} step {}: {}", job.getId(), step, message);
+    }
+
+    private boolean isCancelled(ProvisioningJob job) {
+        return jobRepository.findById(job.getId())
+                .map(j -> j.getStatus() == ProvisioningJobStatus.CANCELLED)
+                .orElse(true);
     }
 
     private void failJob(ProvisioningJob job, ProvisioningStep failStep, String errorMessage) {

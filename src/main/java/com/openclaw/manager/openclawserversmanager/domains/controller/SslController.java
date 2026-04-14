@@ -2,6 +2,7 @@ package com.openclaw.manager.openclawserversmanager.domains.controller;
 
 import com.openclaw.manager.openclawserversmanager.domains.dto.ProvisioningJobResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslCertificateResponse;
+import com.openclaw.manager.openclawserversmanager.domains.dto.SslDashboardResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.TriggerProvisioningRequest;
 import com.openclaw.manager.openclawserversmanager.domains.entity.ProvisioningJobStatus;
 import com.openclaw.manager.openclawserversmanager.domains.service.ProvisioningOrchestrator;
@@ -80,6 +81,14 @@ public class SslController {
         UUID userId = (UUID) authentication.getPrincipal();
         provisioningOrchestrator.cancelProvisioning(jobId, userId);
         return ResponseEntity.noContent().build();
+    }
+
+    // ── Dashboard ──────────────────────────────
+
+    @GetMapping("/dashboard")
+    @Operation(summary = "SSL certificate dashboard with status summary")
+    public ResponseEntity<SslDashboardResponse> dashboard() {
+        return ResponseEntity.ok(sslService.getDashboard());
     }
 
     // ── Certificate queries ──────────────────────────────

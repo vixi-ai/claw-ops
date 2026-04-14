@@ -7,7 +7,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import com.openclaw.manager.openclawserversmanager.common.validation.HostnameValidator;
+
 import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,7 +21,10 @@ public class SslVerificationService {
 
     private static final Logger log = LoggerFactory.getLogger(SslVerificationService.class);
     private static final Pattern EXPIRY_PATTERN = Pattern.compile(
-            "notAfter=(\\d{4}-\\d{2}-\\d{2})"
+            "notAfter=(.+)"
+    );
+    private static final DateTimeFormatter OPENSSL_DATE_FORMAT = DateTimeFormatter.ofPattern(
+            "MMM ppd HH:mm:ss yyyy z", Locale.US
     );
 
     private final SshService sshService;
@@ -26,6 +34,7 @@ public class SslVerificationService {
     }
 
     public ProbeResult probe(Server server, String hostname) {
+        HostnameValidator.requireValid(hostname);
         String httpCode = fetchHttpStatus(server,
                 "curl -sI -o /dev/null -w '%%{http_code}' --max-time 10 http://%s || echo 'FAILED'"
                         .formatted(hostname));
@@ -79,15 +88,23 @@ public class SslVerificationService {
         // Parse "notAfter=Mar 24 12:00:00 2026 GMT" or similar
         String out = result.stdout().trim();
         try {
-            // Try ISO-like extraction first
             Matcher matcher = EXPIRY_PATTERN.matcher(out);
             if (matcher.find()) {
-                return Instant.parse(matcher.group(1) + "T00:00:00Z");
-            }
-            // Fallback: just check if output contains "notAfter" (cert exists)
-            if (out.contains("notAfter")) {
-                log.info("TLS cert found for {} (expiry line: {})", hostname, out);
-                return Instant.now().plusSeconds(86400 * 90); // assume 90 days if can't parse
+                String dateStr = matcher.group(1).trim();
+                try {
+                    // Primary: parse openssl's actual format "Mar 24 12:00:00 2026 GMT"
+                    ZonedDateTime zdt = ZonedDateTime.parse(dateStr, OPENSSL_DATE_FORMAT);
+                    return zdt.toInstant();
+                } catch (Exception e1) {
+                    try {
+                        // Fallback: ISO date "2026-03-24"
+                        if (dateStr.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+                            return Instant.parse(dateStr.substring(0, 10) + "T00:00:00Z");
+                        }
+                    } catch (Exception e2) {
+                        log.warn("Failed to parse TLS cert expiry for {}: {}", hostname, dateStr);
+                    }
+                }
             }
         } catch (Exception e) {
             log.warn("Failed to parse TLS cert expiry for {}: {}", hostname, e.getMessage());
