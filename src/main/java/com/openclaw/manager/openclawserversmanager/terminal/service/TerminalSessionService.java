@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -105,6 +106,10 @@ public class TerminalSessionService {
         return (int) activeSessions.values().stream()
                 .filter(s -> s.getUserId().equals(userId))
                 .count();
+    }
+
+    public Collection<TerminalSession> getAllActiveSessions() {
+        return activeSessions.values();
     }
 
     public List<TerminalSession> findPersistentSessions(UUID serverId) {

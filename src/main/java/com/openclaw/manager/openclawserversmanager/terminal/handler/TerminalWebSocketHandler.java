@@ -62,6 +62,13 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         this.auditService = auditService;
     }
 
+    /** Check if a terminal session has an active WebSocket connection. */
+    public boolean hasActiveWebSocket(String sessionId) {
+        if (persistentWsSessions.containsKey(sessionId)) return true;
+        if (deploymentWsSessions.containsKey(sessionId)) return true;
+        return wsSessionMap.values().stream().anyMatch(s -> s.getSessionId().equals(sessionId));
+    }
+
     @Override
     public void afterConnectionEstablished(WebSocketSession wsSession) throws Exception {
         String query = wsSession.getUri() != null ? wsSession.getUri().getQuery() : null;
