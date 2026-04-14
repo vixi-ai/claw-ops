@@ -139,6 +139,20 @@ public class MonitoringController {
         return ResponseEntity.ok(result);
     }
 
+    // ── Metric Aggregation ────────────────────────────────────
+
+    @GetMapping("/metrics/{serverId}/aggregate")
+    @Operation(summary = "Get aggregated metrics (min/max/avg) for a time range")
+    public ResponseEntity<com.openclaw.manager.openclawserversmanager.monitoring.dto.MetricAggregation> getAggregatedMetrics(
+            @PathVariable UUID serverId,
+            @RequestParam MetricType type,
+            @RequestParam(required = false) Instant from,
+            @RequestParam(required = false) Instant to) {
+        if (from == null) from = Instant.now().minus(java.time.Duration.ofHours(1));
+        if (to == null) to = Instant.now();
+        return ResponseEntity.ok(metricsService.getAggregatedMetrics(serverId, type, from, to));
+    }
+
     // ── Trigger Check ───────────────────────────────────────
 
     @PostMapping("/check/{serverId}")

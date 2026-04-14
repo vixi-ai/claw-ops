@@ -24,6 +24,18 @@ public interface MetricSampleRepository extends JpaRepository<MetricSample, UUID
            "(SELECT MAX(m2.collectedAt) FROM MetricSample m2 WHERE m2.serverId = :serverId AND m2.metricType = m.metricType)")
     List<MetricSample> findLatestByServerId(UUID serverId);
 
+    @Query("SELECT AVG(m.value) FROM MetricSample m WHERE m.serverId = :serverId AND m.metricType = :metricType AND m.collectedAt BETWEEN :from AND :to")
+    Double findAvgValue(UUID serverId, MetricType metricType, Instant from, Instant to);
+
+    @Query("SELECT MIN(m.value) FROM MetricSample m WHERE m.serverId = :serverId AND m.metricType = :metricType AND m.collectedAt BETWEEN :from AND :to")
+    Double findMinValue(UUID serverId, MetricType metricType, Instant from, Instant to);
+
+    @Query("SELECT MAX(m.value) FROM MetricSample m WHERE m.serverId = :serverId AND m.metricType = :metricType AND m.collectedAt BETWEEN :from AND :to")
+    Double findMaxValue(UUID serverId, MetricType metricType, Instant from, Instant to);
+
+    @Query("SELECT COUNT(m) FROM MetricSample m WHERE m.serverId = :serverId AND m.metricType = :metricType AND m.collectedAt BETWEEN :from AND :to")
+    long countSamples(UUID serverId, MetricType metricType, Instant from, Instant to);
+
     @Modifying
     @Query("DELETE FROM MetricSample m WHERE m.collectedAt < :before")
     long deleteByCollectedAtBefore(Instant before);

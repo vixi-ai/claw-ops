@@ -1,7 +1,9 @@
 package com.openclaw.manager.openclawserversmanager.monitoring.service;
 
 import com.openclaw.manager.openclawserversmanager.monitoring.collector.CollectionResult;
+import com.openclaw.manager.openclawserversmanager.monitoring.engine.AlertEngine;
 import com.openclaw.manager.openclawserversmanager.monitoring.engine.HealthEvaluator;
+import com.openclaw.manager.openclawserversmanager.monitoring.entity.HealthSnapshot;
 import com.openclaw.manager.openclawserversmanager.monitoring.entity.MetricSample;
 import com.openclaw.manager.openclawserversmanager.monitoring.entity.MetricType;
 import com.openclaw.manager.openclawserversmanager.monitoring.repository.MetricSampleRepository;
@@ -23,11 +25,14 @@ public class MetricsService {
 
     private final MetricSampleRepository metricSampleRepository;
     private final HealthEvaluator healthEvaluator;
+    private final AlertEngine alertEngine;
 
     public MetricsService(MetricSampleRepository metricSampleRepository,
-                          HealthEvaluator healthEvaluator) {
+                          HealthEvaluator healthEvaluator,
+                          AlertEngine alertEngine) {
         this.metricSampleRepository = metricSampleRepository;
         this.healthEvaluator = healthEvaluator;
+        this.alertEngine = alertEngine;
     }
 
     @Transactional
@@ -41,7 +46,14 @@ public class MetricsService {
         }
 
         // Delegate health evaluation to HealthEvaluator (handles all state logic)
-        healthEvaluator.evaluate(result);
+        HealthSnapshot snapshot = healthEvaluator.evaluate(result);
+
+        // Evaluate alert rules against the collected metrics
+        try {
+            alertEngine.evaluate(result.serverId(), result, snapshot);
+        } catch (Exception e) {
+            log.error("Alert evaluation failed for server {}: {}", result.serverId(), e.getMessage());
+        }
     }
 
     @Transactional(readOnly = true)
@@ -53,6 +65,17 @@ public class MetricsService {
     @Transactional(readOnly = true)
     public List<MetricSample> getLatestMetrics(UUID serverId) {
         return metricSampleRepository.findLatestByServerId(serverId);
+    }
+
+    @Transactional(readOnly = true)
+    public com.openclaw.manager.openclawserversmanager.monitoring.dto.MetricAggregation getAggregatedMetrics(
+            UUID serverId, MetricType metricType, Instant from, Instant to) {
+        Double min = metricSampleRepository.findMinValue(serverId, metricType, from, to);
+        Double max = metricSampleRepository.findMaxValue(serverId, metricType, from, to);
+        Double avg = metricSampleRepository.findAvgValue(serverId, metricType, from, to);
+        long count = metricSampleRepository.countSamples(serverId, metricType, from, to);
+        return new com.openclaw.manager.openclawserversmanager.monitoring.dto.MetricAggregation(
+                metricType, min, max, avg, count);
     }
 
     @Transactional
