@@ -38,17 +38,15 @@ public class AlertNotificationService {
     private final AlertRuleRepository alertRuleRepository;
     private final ServerRepository serverRepository;
     private final EncryptionService encryptionService;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final HttpClient httpClient;
 
     public AlertNotificationService(AlertRuleRepository alertRuleRepository,
                                     ServerRepository serverRepository,
-                                    EncryptionService encryptionService,
-                                    ObjectMapper objectMapper) {
+                                    EncryptionService encryptionService) {
         this.alertRuleRepository = alertRuleRepository;
         this.serverRepository = serverRepository;
         this.encryptionService = encryptionService;
-        this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
