@@ -25,16 +25,41 @@ public class SslVerificationService {
         this.sshService = sshService;
     }
 
+    public ProbeResult probe(Server server, String hostname) {
+        String httpCode = fetchHttpStatus(server,
+                "curl -sI -o /dev/null -w '%%{http_code}' --max-time 10 http://%s || echo 'FAILED'"
+                        .formatted(hostname));
+        String httpsCode = fetchHttpStatus(server,
+                "curl -skI -o /dev/null -w '%%{http_code}' --max-time 10 https://%s || echo 'FAILED'"
+                        .formatted(hostname));
+        Instant certExpiry = verifyTlsCertificate(server, hostname);
+
+        boolean httpReachable = isReachableStatus(httpCode);
+        boolean httpsReachable = isReachableStatus(httpsCode);
+        boolean tlsPresent = certExpiry != null;
+        boolean tlsValid = certExpiry != null && certExpiry.isAfter(Instant.now());
+
+        log.info("Domain probe for {}: http={}, https={}, tlsPresent={}, tlsValid={}",
+                hostname, httpCode, httpsCode, tlsPresent, tlsValid);
+
+        return new ProbeResult(
+                httpCode,
+                httpReachable,
+                httpsCode,
+                httpsReachable,
+                certExpiry,
+                tlsPresent,
+                tlsValid
+        );
+    }
+
     /**
      * Checks if HTTPS endpoint is reachable from the server via curl.
      */
     public boolean verifyHttpsReachable(Server server, String hostname) {
-        CommandResult result = sshService.executeCommand(server,
-                "curl -sI -o /dev/null -w '%%{http_code}' --max-time 10 https://%s || echo 'FAILED'"
-                        .formatted(hostname), 20);
-        String code = result.stdout().trim();
-        boolean reachable = code.startsWith("2") || code.startsWith("3") || code.equals("404");
-        log.info("HTTPS check for {}: HTTP {} (reachable={})", hostname, code, reachable);
+        ProbeResult probe = probe(server, hostname);
+        boolean reachable = probe.httpsReachable();
+        log.info("HTTPS check for {}: HTTP {} (reachable={})", hostname, probe.httpsCode(), reachable);
         return reachable;
     }
 
@@ -75,17 +100,44 @@ public class SslVerificationService {
      * Full verification: HTTPS reachability + TLS certificate validity.
      */
     public VerificationResult verify(Server server, String hostname) {
-        boolean httpsReachable = verifyHttpsReachable(server, hostname);
-        Instant certExpiry = null;
-        boolean tlsValid = false;
-
-        if (httpsReachable) {
-            certExpiry = verifyTlsCertificate(server, hostname);
-            tlsValid = certExpiry != null && certExpiry.isAfter(Instant.now());
-        }
+        ProbeResult probe = probe(server, hostname);
+        boolean httpsReachable = probe.httpsReachable();
+        Instant certExpiry = probe.certExpiry();
+        boolean tlsValid = probe.tlsValid();
 
         return new VerificationResult(httpsReachable, tlsValid, certExpiry,
                 httpsReachable ? null : "HTTPS endpoint not reachable");
+    }
+
+    private String fetchHttpStatus(Server server, String command) {
+        CommandResult result = sshService.executeCommand(server, command, 20);
+        return result.stdout() != null ? result.stdout().trim() : "";
+    }
+
+    private boolean isReachableStatus(String code) {
+        return code != null && (code.startsWith("2")
+                || code.startsWith("3")
+                || code.equals("401")
+                || code.equals("403")
+                || code.equals("404"));
+    }
+
+    public record ProbeResult(
+            String httpCode,
+            boolean httpReachable,
+            String httpsCode,
+            boolean httpsReachable,
+            Instant certExpiry,
+            boolean tlsPresent,
+            boolean tlsValid
+    ) {
+        public static ProbeResult empty() {
+            return new ProbeResult("", false, "", false, null, false, false);
+        }
+
+        public boolean anyReachable() {
+            return httpReachable || httpsReachable;
+        }
     }
 
     public record VerificationResult(

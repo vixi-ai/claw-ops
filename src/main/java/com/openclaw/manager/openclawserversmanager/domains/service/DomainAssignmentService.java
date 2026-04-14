@@ -57,6 +57,7 @@ public class DomainAssignmentService {
     private final HostnameStrategy hostnameStrategy;
     private final DomainEventService domainEventService;
     private final AuditService auditService;
+    private final ServerSslDomainSyncService serverSslDomainSyncService;
     private final ProvisioningOrchestrator provisioningOrchestrator;
 
     public DomainAssignmentService(DomainAssignmentRepository domainAssignmentRepository,
@@ -68,6 +69,7 @@ public class DomainAssignmentService {
                                     HostnameStrategy hostnameStrategy,
                                     DomainEventService domainEventService,
                                     AuditService auditService,
+                                    ServerSslDomainSyncService serverSslDomainSyncService,
                                     @Lazy ProvisioningOrchestrator provisioningOrchestrator) {
         this.domainAssignmentRepository = domainAssignmentRepository;
         this.managedZoneService = managedZoneService;
@@ -78,6 +80,7 @@ public class DomainAssignmentService {
         this.hostnameStrategy = hostnameStrategy;
         this.domainEventService = domainEventService;
         this.auditService = auditService;
+        this.serverSslDomainSyncService = serverSslDomainSyncService;
         this.provisioningOrchestrator = provisioningOrchestrator;
     }
 
@@ -378,7 +381,13 @@ public class DomainAssignmentService {
 
     private Optional<DomainAssignmentResponse> doAutoAssign(
             UUID serverId, String serverName, String serverIp, ManagedZone zone, UUID userId) {
-        String hostname = resolveUniqueHostname(serverName, zone.getZoneName());
+        Server server = serverService.getServerEntity(serverId);
+        Optional<DomainAssignment> reusableAssignment = findReusableAssignment(server, zone);
+        if (reusableAssignment.isPresent()) {
+            return Optional.of(DomainAssignmentMapper.toResponse(reusableAssignment.get(), zone.getZoneName()));
+        }
+
+        String hostname = resolveUniqueHostname(server, serverName, zone.getZoneName());
         if (hostname == null) {
             log.warn("Could not generate unique hostname for server '{}' in zone '{}'",
                     serverName, zone.getZoneName());
@@ -440,22 +449,64 @@ public class DomainAssignmentService {
         return Optional.of(DomainAssignmentMapper.toResponse(assignment, zone.getZoneName()));
     }
 
-    private String resolveUniqueHostname(String serverName, String zoneName) {
+    private Optional<DomainAssignment> findReusableAssignment(Server server, ManagedZone zone) {
+        String currentHostname = buildAssignedDomain(server);
+        if (currentHostname != null && belongsToZone(currentHostname, zone.getZoneName())) {
+            Optional<DomainAssignment> byHostname = domainAssignmentRepository
+                    .findByHostnameAndStatusNot(currentHostname, AssignmentStatus.RELEASED);
+            if (byHostname.isPresent()) {
+                DomainAssignment assignment = byHostname.get();
+                if (assignment.getAssignmentType() == AssignmentType.SERVER
+                        && (assignment.getResourceId() == null || server.getId().equals(assignment.getResourceId()))) {
+                    if (assignment.getResourceId() == null) {
+                        assignment.setResourceId(server.getId());
+                        assignment = domainAssignmentRepository.save(assignment);
+                    }
+                    return Optional.of(assignment);
+                }
+            }
+        }
+
+        return domainAssignmentRepository.findByResourceIdAndStatusNot(server.getId(), AssignmentStatus.RELEASED).stream()
+                .filter(assignment -> assignment.getAssignmentType() == AssignmentType.SERVER)
+                .filter(assignment -> zone.getId().equals(assignment.getZoneId()))
+                .sorted((left, right) -> right.getCreatedAt().compareTo(left.getCreatedAt()))
+                .findFirst();
+    }
+
+    private String resolveUniqueHostname(Server server, String serverName, String zoneName) {
         String base = hostnameStrategy.generateServerHostname(serverName, zoneName);
-        if (isHostnameAvailable(base)) return base;
+        if (isHostnameAvailableForServer(server, base)) return base;
 
         String slug = slugify(serverName);
         for (int i = 2; i <= 99; i++) {
             String candidate = slug + "-" + i + "." + zoneName;
-            if (isHostnameAvailable(candidate)) return candidate;
+            if (isHostnameAvailableForServer(server, candidate)) return candidate;
         }
         return null;
     }
 
-    private boolean isHostnameAvailable(String hostname) {
-        return domainAssignmentRepository
-                .findByHostnameAndStatusNot(hostname, AssignmentStatus.RELEASED)
-                .isEmpty();
+    private boolean isHostnameAvailableForServer(Server server, String hostname) {
+        return domainAssignmentRepository.findByHostnameAndStatusNot(hostname, AssignmentStatus.RELEASED)
+                .filter(assignment -> assignment.getResourceId() != null && !server.getId().equals(assignment.getResourceId()))
+                .isEmpty()
+                && !serverSslDomainSyncService.hasExternalConflict(server, hostname);
+    }
+
+    private String buildAssignedDomain(Server server) {
+        if (server.getRootDomain() == null || server.getRootDomain().isBlank()) {
+            return null;
+        }
+        if (server.getSubdomain() == null || server.getSubdomain().isBlank()) {
+            return server.getRootDomain();
+        }
+        return server.getSubdomain() + "." + server.getRootDomain();
+    }
+
+    private boolean belongsToZone(String hostname, String zoneName) {
+        String normalizedHostname = hostname.toLowerCase();
+        String normalizedZone = zoneName.toLowerCase();
+        return normalizedHostname.equals(normalizedZone) || normalizedHostname.endsWith("." + normalizedZone);
     }
 
     private String slugify(String input) {

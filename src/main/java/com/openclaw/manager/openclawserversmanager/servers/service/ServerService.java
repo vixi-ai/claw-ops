@@ -22,6 +22,7 @@ import com.openclaw.manager.openclawserversmanager.ssh.model.TestConnectionResul
 import com.openclaw.manager.openclawserversmanager.domains.dto.DomainAssignmentResponse;
 import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
 import com.openclaw.manager.openclawserversmanager.domains.service.DomainAssignmentService;
+import com.openclaw.manager.openclawserversmanager.domains.service.ServerSslDomainSyncService;
 import com.openclaw.manager.openclawserversmanager.domains.service.SslService;
 import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
 import com.openclaw.manager.openclawserversmanager.users.service.UserServerAccessService;
@@ -49,12 +50,14 @@ public class ServerService {
     private final SshService sshService;
     private final DomainAssignmentService domainAssignmentService;
     private final SslService sslService;
+    private final ServerSslDomainSyncService serverSslDomainSyncService;
     private final UserServerAccessService userServerAccessService;
 
     public ServerService(ServerRepository serverRepository, SecretService secretService,
                          AuditService auditService, SshService sshService,
                          @Lazy DomainAssignmentService domainAssignmentService,
                          @Lazy SslService sslService,
+                         ServerSslDomainSyncService serverSslDomainSyncService,
                          @Lazy UserServerAccessService userServerAccessService) {
         this.serverRepository = serverRepository;
         this.secretService = secretService;
@@ -62,6 +65,7 @@ public class ServerService {
         this.sshService = sshService;
         this.domainAssignmentService = domainAssignmentService;
         this.sslService = sslService;
+        this.serverSslDomainSyncService = serverSslDomainSyncService;
         this.userServerAccessService = userServerAccessService;
     }
 
@@ -86,11 +90,20 @@ public class ServerService {
 
         Server server = ServerMapper.toEntity(request);
         Server saved = serverRepository.save(server);
+        ServerSslDomainSyncService.SyncResult syncResult = null;
+        if (request.zoneId() == null) {
+            syncResult = syncTrackedDomainStateWithResult(saved);
+            saved = serverRepository.findById(saved.getId()).orElse(saved);
+        }
 
         try {
             auditService.log(AuditAction.SERVER_CREATED, "SERVER", saved.getId(), currentUserId,
                     "Server '%s' created (env: %s)".formatted(saved.getName(), saved.getEnvironment()));
         } catch (Exception ignored) {
+        }
+
+        if (request.zoneId() == null && syncResult != null && syncResult.detected() && syncResult.hostname() != null) {
+            return ServerMapper.toResponse(saved);
         }
 
         // Auto-assign subdomain
@@ -186,6 +199,7 @@ public class ServerService {
         }
 
         Server saved = serverRepository.save(server);
+        saved = syncTrackedDomainState(saved);
 
         try {
             auditService.log(AuditAction.SERVER_UPDATED, "SERVER", saved.getId(), currentUserId,
@@ -231,6 +245,9 @@ public class ServerService {
 
         server.setStatus(result.success() ? ServerStatus.ONLINE : ServerStatus.OFFLINE);
         serverRepository.save(server);
+        if (result.success()) {
+            syncTrackedDomainState(server);
+        }
 
         try {
             auditService.log(AuditAction.SERVER_CONNECTION_TESTED, "SERVER", id, currentUserId,
@@ -280,6 +297,26 @@ public class ServerService {
         Server server = findServerOrThrow(id);
         server.setSslEnabled(sslEnabled);
         serverRepository.save(server);
+    }
+
+    private Server syncTrackedDomainState(Server server) {
+        syncTrackedDomainStateWithResult(server);
+        return serverRepository.findById(server.getId()).orElse(server);
+    }
+
+    private ServerSslDomainSyncService.SyncResult syncTrackedDomainStateWithResult(Server server) {
+        try {
+            return serverSslDomainSyncService.sync(server);
+        } catch (Exception e) {
+            log.debug("Server domain/SSL sync skipped for '{}': {}", server.getName(), e.getMessage());
+            return new ServerSslDomainSyncService.SyncResult(
+                    null,
+                    server.isSslEnabled(),
+                    null,
+                    null,
+                    false
+            );
+        }
     }
 
     private Server findServerOrThrow(UUID id) {

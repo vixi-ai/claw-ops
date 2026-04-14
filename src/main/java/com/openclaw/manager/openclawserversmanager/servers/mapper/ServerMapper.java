@@ -17,6 +17,13 @@ public final class ServerMapper {
     }
 
     public static ServerResponse toResponse(Server server) {
+        String assignedDomain = null;
+        if (server.getRootDomain() != null && !server.getRootDomain().isBlank()) {
+            assignedDomain = server.getSubdomain() == null || server.getSubdomain().isBlank()
+                    ? server.getRootDomain()
+                    : server.getSubdomain() + "." + server.getRootDomain();
+        }
+
         return new ServerResponse(
                 server.getId(),
                 server.getName(),
@@ -30,9 +37,7 @@ public final class ServerMapper {
                 server.getEnvironment(),
                 server.getRootDomain(),
                 server.getSubdomain(),
-                (server.getSubdomain() != null && server.getRootDomain() != null)
-                        ? server.getSubdomain() + "." + server.getRootDomain()
-                        : null,
+                assignedDomain,
                 server.isSslEnabled(),
                 server.getStatus(),
                 deserializeMetadata(server.getMetadata()),

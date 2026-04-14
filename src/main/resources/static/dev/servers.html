@@ -408,7 +408,7 @@
                 closeModal();
                 loadServers(currentPage);
                 if (!id && serverData.assignedDomain) {
-                    showSuccess('Server created with subdomain: ' + serverData.assignedDomain);
+                    showSuccess('Server created with domain: ' + serverData.assignedDomain);
                 } else {
                     showSuccess(id ? 'Server updated' : 'Server created');
                 }
@@ -512,7 +512,8 @@
                         const data = await r.json();
                         // API returns a plain array (not paged) when filtering by resourceId
                         const list = Array.isArray(data) ? data : (data.content || []);
-                        const active = list.find(a => a.status !== 'RELEASED');
+                        const active = list.find(a => a.hostname === s.assignedDomain && a.status !== 'RELEASED')
+                            || list.find(a => a.status !== 'RELEASED');
                         if (active) assignmentMap[s.id] = active;
                     }
                 } catch (e) {}
@@ -523,6 +524,7 @@
                     : s.passphraseCredentialId ? 'Key + Passphrase' : 'Private Key';
                 const ssl = sslMap[s.id];
                 const assignment = assignmentMap[s.id];
+                const displayDomain = s.assignedDomain || assignment?.hostname || null;
                 const sslColors = { ACTIVE: 'badge-active', FAILED: 'badge-error', PROVISIONING: 'badge-soon', EXPIRED: 'badge-warning', PENDING: 'badge-soon', REMOVING: 'badge-soon' };
                 let sslCell;
                 if (ssl) {
@@ -542,6 +544,10 @@
                     }
                 } else if (assignment) {
                     sslCell = `<button class="btn btn-ghost btn-sm" onclick="provisionSsl('${assignment.id}', this)">Provision SSL</button>`;
+                } else if (s.sslEnabled) {
+                    sslCell = `<span class="badge badge-active">ACTIVE</span><div class="text-muted" style="font-size:10px;margin-top:2px;">Detected on server</div>`;
+                } else if (displayDomain) {
+                    sslCell = '<span class="text-muted">External domain</span>';
                 } else {
                     sslCell = '<span class="text-muted">No domain</span>';
                 }
@@ -549,7 +555,7 @@
                 <tr>
                     <td><strong>${esc(s.name)}</strong></td>
                     <td><span class="text-sm" style="font-family:var(--mono);">${esc(s.hostname || s.ipAddress)}</span></td>
-                    <td>${s.assignedDomain ? '<span class="text-sm" style="font-family:var(--mono);">' + esc(s.assignedDomain) + '</span>' : '<span class="text-muted">—</span>'}</td>
+                    <td>${displayDomain ? '<span class="text-sm" style="font-family:var(--mono);">' + esc(displayDomain) + '</span>' : '<span class="text-muted">—</span>'}</td>
                     <td>${s.sshPort}</td>
                     <td><span class="badge">${esc(s.environment)}</span></td>
                     <td class="text-sm">${authLabel}</td>
