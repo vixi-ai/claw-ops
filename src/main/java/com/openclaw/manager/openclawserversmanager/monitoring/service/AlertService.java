@@ -34,7 +34,7 @@ public class AlertService {
 
     @Transactional(readOnly = true)
     public List<AlertRule> listRules(UUID serverId, Boolean enabled) {
-        if (serverId != null) return alertRuleRepository.findByServerId(serverId);
+        if (serverId != null) return alertRuleRepository.findByServerIdOrServerIdIsNull(serverId);
         if (enabled != null) return alertRuleRepository.findByEnabled(enabled);
         return alertRuleRepository.findAll();
     }
