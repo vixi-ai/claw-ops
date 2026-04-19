@@ -24,6 +24,8 @@ public record ServerResponse(
         boolean sslEnabled,
         ServerStatus status,
         Map<String, Object> metadata,
+        UUID pendingDomainAssignmentId,
+        UUID pendingDomainJobId,
         Instant createdAt,
         Instant updatedAt
 ) {

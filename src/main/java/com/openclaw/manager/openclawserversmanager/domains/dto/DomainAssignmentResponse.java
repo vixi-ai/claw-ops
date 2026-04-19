@@ -18,6 +18,7 @@ public record DomainAssignmentResponse(
         UUID resourceId,
         AssignmentStatus status,
         String providerRecordId,
+        UUID latestJobId,
         Instant createdAt,
         Instant updatedAt
 ) {

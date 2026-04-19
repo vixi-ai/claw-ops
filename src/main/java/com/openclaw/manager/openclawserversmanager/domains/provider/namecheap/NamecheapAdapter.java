@@ -26,6 +26,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -36,12 +37,17 @@ public class NamecheapAdapter implements DnsProviderAdapter {
     private static final Logger log = LoggerFactory.getLogger(NamecheapAdapter.class);
     private static final String BASE_URL = "https://api.namecheap.com/xml.response";
     private static final String IP_DETECT_URL = "https://api.ipify.org";
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(15);
 
     private final HttpClient httpClient;
     private volatile String cachedPublicIp;
 
     public NamecheapAdapter() {
-        this.httpClient = HttpClient.newBuilder().build();
+        // Connect timeout; per-request read timeout is set on HttpRequest.Builder.
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(CONNECT_TIMEOUT)
+                .build();
     }
 
     @Override
@@ -356,6 +362,7 @@ public class NamecheapAdapter implements DnsProviderAdapter {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
+                    .timeout(READ_TIMEOUT)
                     .GET()
                     .build();
 
@@ -432,6 +439,7 @@ public class NamecheapAdapter implements DnsProviderAdapter {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(IP_DETECT_URL))
+                    .timeout(READ_TIMEOUT)
                     .GET()
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());

@@ -19,8 +19,7 @@ import com.openclaw.manager.openclawserversmanager.servers.repository.ServerRepo
 import com.openclaw.manager.openclawserversmanager.ssh.dto.CommandResponse;
 import com.openclaw.manager.openclawserversmanager.ssh.model.CommandResult;
 import com.openclaw.manager.openclawserversmanager.ssh.model.TestConnectionResult;
-import com.openclaw.manager.openclawserversmanager.domains.dto.DomainAssignmentResponse;
-import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
+import com.openclaw.manager.openclawserversmanager.domains.service.AutoAssignResult;
 import com.openclaw.manager.openclawserversmanager.domains.service.DomainAssignmentService;
 import com.openclaw.manager.openclawserversmanager.domains.service.ServerSslDomainSyncService;
 import com.openclaw.manager.openclawserversmanager.domains.service.SslService;
@@ -106,28 +105,27 @@ public class ServerService {
             return ServerMapper.toResponse(saved);
         }
 
-        // Auto-assign subdomain
+        // Auto-assign subdomain — async. Returns almost immediately with a job id the
+        // frontend uses to poll progress. The DNS provider call does NOT block the
+        // server-create response thread anymore.
+        UUID pendingAssignmentId = null;
+        UUID pendingJobId = null;
         try {
             String ip = saved.getIpAddress() != null ? saved.getIpAddress() : saved.getHostname();
-            Optional<DomainAssignmentResponse> assignmentOpt =
-                    domainAssignmentService.autoAssignServerDomain(
-                            saved.getId(), saved.getName(), ip, request.zoneId(), currentUserId);
+            Optional<AutoAssignResult> result = domainAssignmentService.autoAssignServerDomain(
+                    saved.getId(), saved.getName(), ip, request.zoneId(), currentUserId);
 
-            if (assignmentOpt.isPresent()) {
-                DomainAssignmentResponse assignment = assignmentOpt.get();
-                saved.setRootDomain(assignment.zoneName());
-                String subdomain = assignment.hostname().replace("." + assignment.zoneName(), "");
-                saved.setSubdomain(subdomain);
-                saved = serverRepository.save(saved);
+            if (result.isPresent()) {
+                AutoAssignResult r = result.get();
+                pendingAssignmentId = r.assignment().id();
+                if (r.job() != null) pendingJobId = r.job().id();
             }
         } catch (Exception e) {
-            if (request.zoneId() != null) {
-                throw new DomainException("Domain assignment failed: " + e.getMessage());
-            }
-            log.warn("Auto-assign domain failed for server '{}': {}", saved.getName(), e.getMessage());
+            // No longer throw — client sees the server was created and can reassign later.
+            log.warn("Auto-assign domain failed to queue for server '{}': {}", saved.getName(), e.getMessage());
         }
 
-        return ServerMapper.toResponse(saved);
+        return ServerMapper.toResponse(saved, pendingAssignmentId, pendingJobId);
     }
 
     public Page<ServerResponse> getAllServers(Pageable pageable) {

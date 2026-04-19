@@ -13,10 +13,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -27,13 +29,21 @@ public class CloudflareAdapter implements DnsProviderAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(CloudflareAdapter.class);
     private static final String BASE_URL = "https://api.cloudflare.com/client/v4";
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(15);
 
     private final RestClient restClient;
 
     public CloudflareAdapter() {
+        // Explicit timeouts prevent a slow/unresponsive provider from wedging the caller.
+        // The runner tolerates timeouts via its retry policy.
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(CONNECT_TIMEOUT);
+        factory.setReadTimeout(READ_TIMEOUT);
         this.restClient = RestClient.builder()
                 .baseUrl(BASE_URL)
                 .defaultHeader("Content-Type", "application/json")
+                .requestFactory(factory)
                 .build();
     }
 

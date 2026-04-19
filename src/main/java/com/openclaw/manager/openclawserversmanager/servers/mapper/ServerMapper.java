@@ -8,6 +8,7 @@ import com.openclaw.manager.openclawserversmanager.servers.dto.ServerResponse;
 import com.openclaw.manager.openclawserversmanager.servers.entity.Server;
 
 import java.util.Map;
+import java.util.UUID;
 
 public final class ServerMapper {
 
@@ -17,6 +18,10 @@ public final class ServerMapper {
     }
 
     public static ServerResponse toResponse(Server server) {
+        return toResponse(server, null, null);
+    }
+
+    public static ServerResponse toResponse(Server server, UUID pendingDomainAssignmentId, UUID pendingDomainJobId) {
         String assignedDomain = null;
         if (server.getRootDomain() != null && !server.getRootDomain().isBlank()) {
             assignedDomain = server.getSubdomain() == null || server.getSubdomain().isBlank()
@@ -41,6 +46,8 @@ public final class ServerMapper {
                 server.isSslEnabled(),
                 server.getStatus(),
                 deserializeMetadata(server.getMetadata()),
+                pendingDomainAssignmentId,
+                pendingDomainJobId,
                 server.getCreatedAt(),
                 server.getUpdatedAt()
         );

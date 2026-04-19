@@ -6,6 +6,7 @@ import com.openclaw.manager.openclawserversmanager.common.exception.ResourceNotF
 import com.openclaw.manager.openclawserversmanager.domains.dto.AssignCustomDomainRequest;
 import com.openclaw.manager.openclawserversmanager.domains.dto.AssignServerDomainRequest;
 import com.openclaw.manager.openclawserversmanager.domains.dto.DomainAssignmentResponse;
+import com.openclaw.manager.openclawserversmanager.domains.dto.DomainJobResponse;
 import com.openclaw.manager.openclawserversmanager.domains.entity.AssignmentStatus;
 import com.openclaw.manager.openclawserversmanager.domains.entity.AssignmentType;
 import com.openclaw.manager.openclawserversmanager.domains.entity.DnsRecordType;
@@ -58,7 +59,7 @@ public class DomainAssignmentService {
     private final DomainEventService domainEventService;
     private final AuditService auditService;
     private final ServerSslDomainSyncService serverSslDomainSyncService;
-    private final ProvisioningOrchestrator provisioningOrchestrator;
+    private final DomainAssignmentOrchestrator domainAssignmentOrchestrator;
 
     public DomainAssignmentService(DomainAssignmentRepository domainAssignmentRepository,
                                     ManagedZoneService managedZoneService,
@@ -70,7 +71,7 @@ public class DomainAssignmentService {
                                     DomainEventService domainEventService,
                                     AuditService auditService,
                                     ServerSslDomainSyncService serverSslDomainSyncService,
-                                    @Lazy ProvisioningOrchestrator provisioningOrchestrator) {
+                                    @Lazy DomainAssignmentOrchestrator domainAssignmentOrchestrator) {
         this.domainAssignmentRepository = domainAssignmentRepository;
         this.managedZoneService = managedZoneService;
         this.providerAccountService = providerAccountService;
@@ -81,9 +82,14 @@ public class DomainAssignmentService {
         this.domainEventService = domainEventService;
         this.auditService = auditService;
         this.serverSslDomainSyncService = serverSslDomainSyncService;
-        this.provisioningOrchestrator = provisioningOrchestrator;
+        this.domainAssignmentOrchestrator = domainAssignmentOrchestrator;
     }
 
+    /**
+     * Manual "assign domain to server" entry point. Creates the assignment row in
+     * PROVISIONING state and hands off DNS creation to an async job — returns immediately
+     * with the job id embedded in the response.
+     */
     @Transactional
     public DomainAssignmentResponse assignServerDomain(AssignServerDomainRequest request, UUID userId) {
         Server server = serverService.getServerEntity(request.serverId());
@@ -102,12 +108,10 @@ public class DomainAssignmentService {
                 ? request.hostnameOverride()
                 : hostnameStrategy.generateServerHostname(server.getName(), zone.getZoneName());
 
-        // Check hostname not already assigned
         if (domainAssignmentRepository.findByHostnameAndStatusNot(hostname, AssignmentStatus.RELEASED).isPresent()) {
             throw new DomainException("Hostname '%s' is already assigned".formatted(hostname));
         }
 
-        // Create assignment
         DomainAssignment assignment = new DomainAssignment();
         assignment.setZoneId(zone.getId());
         assignment.setHostname(hostname);
@@ -117,51 +121,20 @@ public class DomainAssignmentService {
         assignment.setResourceId(server.getId());
         assignment.setStatus(AssignmentStatus.PROVISIONING);
         assignment.setDesiredStateHash(computeStateHash("A", ipAddress, zone.getDefaultTtl()));
-        assignment = domainAssignmentRepository.save(assignment);
-
-        // Call provider
-        ProviderAccount account = providerAccountService.findAccountOrThrow(zone.getProviderAccountId());
-        String decryptedToken = secretService.decryptSecret(account.getCredentialId());
-        Map<String, Object> settings = ProviderAccountMapper.deserializeSettings(account.getProviderSettings());
-        DnsProviderAdapter adapter = providerAdapterFactory.getAdapter(account.getProviderType());
-
-        try {
-            DnsRecord dnsRecord = new DnsRecord(null, hostname, DnsRecordType.A, ipAddress, zone.getDefaultTtl(), false);
-            DnsRecord created = adapter.createOrUpsertRecord(zone.getZoneName(), zone.getProviderZoneId(),
-                    dnsRecord, decryptedToken, settings);
-
-            assignment.setProviderRecordId(created.providerRecordId());
-            assignment.setStatus(AssignmentStatus.DNS_CREATED);
-            domainAssignmentRepository.save(assignment);
-
-            domainEventService.recordEvent(assignment.getId(), zone.getId(),
-                    DomainEventAction.RECORD_CREATED, DomainEventOutcome.SUCCESS,
-                    created.providerRecordId(), "DNS record created: %s → %s".formatted(hostname, ipAddress));
-        } catch (DnsProviderException e) {
-            assignment.setStatus(AssignmentStatus.FAILED);
-            domainAssignmentRepository.save(assignment);
-
-            domainEventService.recordEvent(assignment.getId(), zone.getId(),
-                    DomainEventAction.RECORD_CREATED, DomainEventOutcome.FAILURE,
-                    e.getProviderCorrelationId(), e.getMessage());
-            throw e;
-        }
+        assignment = domainAssignmentRepository.saveAndFlush(assignment);
 
         try {
             auditService.log(AuditAction.DOMAIN_ASSIGNED, "DOMAIN_ASSIGNMENT", assignment.getId(), userId,
-                    "Server domain assigned: %s → %s".formatted(hostname, ipAddress));
+                    "Server domain assignment queued: %s → %s".formatted(hostname, ipAddress));
         } catch (Exception ignored) { }
 
-        // Best-effort async SSL provisioning for server assignments
-        try {
-            provisioningOrchestrator.triggerProvisioning(assignment.getId(), null, userId);
-        } catch (Exception e) {
-            log.warn("Auto-trigger SSL provisioning failed for {}: {}", hostname, e.getMessage());
-        }
-
-        return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName());
+        DomainJobResponse job = domainAssignmentOrchestrator.triggerAssignment(assignment.getId(), userId);
+        return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName(), job.id());
     }
 
+    /**
+     * Custom DNS record (A/AAAA/CNAME/TXT/...) endpoint. Also async.
+     */
     @Transactional
     public DomainAssignmentResponse assignCustomDomain(AssignCustomDomainRequest request, UUID userId) {
         ManagedZone zone = managedZoneService.findZoneOrThrow(request.zoneId());
@@ -183,42 +156,15 @@ public class DomainAssignmentService {
         assignment.setResourceId(request.resourceId());
         assignment.setStatus(AssignmentStatus.PROVISIONING);
         assignment.setDesiredStateHash(computeStateHash(request.recordType().name(), request.targetValue(), zone.getDefaultTtl()));
-        assignment = domainAssignmentRepository.save(assignment);
-
-        ProviderAccount account = providerAccountService.findAccountOrThrow(zone.getProviderAccountId());
-        String decryptedToken = secretService.decryptSecret(account.getCredentialId());
-        Map<String, Object> settings = ProviderAccountMapper.deserializeSettings(account.getProviderSettings());
-        DnsProviderAdapter adapter = providerAdapterFactory.getAdapter(account.getProviderType());
-
-        try {
-            DnsRecord dnsRecord = new DnsRecord(null, request.hostname(), request.recordType(),
-                    request.targetValue(), zone.getDefaultTtl(), false);
-            DnsRecord created = adapter.createOrUpsertRecord(zone.getZoneName(), zone.getProviderZoneId(),
-                    dnsRecord, decryptedToken, settings);
-
-            assignment.setProviderRecordId(created.providerRecordId());
-            assignment.setStatus(AssignmentStatus.DNS_CREATED);
-            domainAssignmentRepository.save(assignment);
-
-            domainEventService.recordEvent(assignment.getId(), zone.getId(),
-                    DomainEventAction.RECORD_CREATED, DomainEventOutcome.SUCCESS,
-                    created.providerRecordId(), "Custom DNS record created: %s".formatted(request.hostname()));
-        } catch (DnsProviderException e) {
-            assignment.setStatus(AssignmentStatus.FAILED);
-            domainAssignmentRepository.save(assignment);
-
-            domainEventService.recordEvent(assignment.getId(), zone.getId(),
-                    DomainEventAction.RECORD_CREATED, DomainEventOutcome.FAILURE,
-                    e.getProviderCorrelationId(), e.getMessage());
-            throw e;
-        }
+        assignment = domainAssignmentRepository.saveAndFlush(assignment);
 
         try {
             auditService.log(AuditAction.DOMAIN_ASSIGNED, "DOMAIN_ASSIGNMENT", assignment.getId(), userId,
-                    "Custom domain assigned: %s".formatted(request.hostname()));
+                    "Custom domain assignment queued: %s".formatted(request.hostname()));
         } catch (Exception ignored) { }
 
-        return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName());
+        DomainJobResponse job = domainAssignmentOrchestrator.triggerAssignment(assignment.getId(), userId);
+        return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName(), job.id());
     }
 
     @Transactional
@@ -271,6 +217,11 @@ public class DomainAssignmentService {
         }
     }
 
+    /**
+     * Synchronous manual verification. Includes one quick retry — when a user clicks
+     * "Verify" seconds after the DNS record was created, the provider's list endpoint
+     * occasionally hasn't yet surfaced it.
+     */
     @Transactional
     public DomainAssignmentResponse verifyAssignment(UUID assignmentId, UUID userId) {
         DomainAssignment assignment = findAssignmentOrThrow(assignmentId);
@@ -281,12 +232,11 @@ public class DomainAssignmentService {
         Map<String, Object> settings = ProviderAccountMapper.deserializeSettings(account.getProviderSettings());
         DnsProviderAdapter adapter = providerAdapterFactory.getAdapter(account.getProviderType());
 
-        List<DnsRecord> records = adapter.listRecords(zone.getProviderZoneId(), decryptedToken, settings);
-
-        boolean found = records.stream().anyMatch(r ->
-                r.hostname().equalsIgnoreCase(assignment.getHostname()) &&
-                r.type() == assignment.getRecordType() &&
-                r.value().equals(assignment.getTargetValue()));
+        boolean found = checkRecordListed(adapter, zone, assignment, decryptedToken, settings);
+        if (!found) {
+            try { Thread.sleep(2_000L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            found = checkRecordListed(adapter, zone, assignment, decryptedToken, settings);
+        }
 
         if (found) {
             assignment.setStatus(AssignmentStatus.VERIFIED);
@@ -310,10 +260,26 @@ public class DomainAssignmentService {
         return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName());
     }
 
+    private boolean checkRecordListed(DnsProviderAdapter adapter, ManagedZone zone, DomainAssignment assignment,
+                                       String decryptedToken, Map<String, Object> settings) {
+        try {
+            List<DnsRecord> records = adapter.listRecords(zone.getProviderZoneId(), decryptedToken, settings);
+            return records.stream().anyMatch(r ->
+                    r.hostname().equalsIgnoreCase(assignment.getHostname()) &&
+                    r.type() == assignment.getRecordType() &&
+                    r.value().equals(assignment.getTargetValue()));
+        } catch (Exception e) {
+            log.debug("Verify listRecords failed for {}: {}", assignment.getHostname(), e.getMessage());
+            return false;
+        }
+    }
+
     public DomainAssignmentResponse getAssignment(UUID id) {
         DomainAssignment assignment = findAssignmentOrThrow(id);
         ManagedZone zone = managedZoneService.findZoneOrThrow(assignment.getZoneId());
-        return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName());
+        UUID latestJobId = domainAssignmentOrchestrator.getLatestJobForAssignment(id)
+                .map(DomainJobResponse::id).orElse(null);
+        return DomainAssignmentMapper.toResponse(assignment, zone.getZoneName(), latestJobId);
     }
 
     public Page<DomainAssignmentResponse> getAllAssignments(Pageable pageable) {
@@ -340,10 +306,10 @@ public class DomainAssignmentService {
     }
 
     /**
-     * Auto-assign using default zone (backward compat).
+     * Auto-assign using default zone (backward compat). Returns empty when no default zone is set.
      */
     @Transactional
-    public Optional<DomainAssignmentResponse> autoAssignServerDomain(
+    public Optional<AutoAssignResult> autoAssignServerDomain(
             UUID serverId, String serverName, String serverIp, UUID userId) {
         return autoAssignServerDomain(serverId, serverName, serverIp, null, userId);
     }
@@ -352,9 +318,12 @@ public class DomainAssignmentService {
      * Auto-assign a subdomain for a server. If zoneId is provided, uses that specific zone
      * (throws on failure). If zoneId is null, falls back to the default auto-assign zone
      * (best-effort, returns empty on failure).
+     *
+     * The DNS provider call is deferred to a {@link DomainAssignmentJob} that the runner
+     * executes asynchronously — this method returns in a few ms.
      */
     @Transactional
-    public Optional<DomainAssignmentResponse> autoAssignServerDomain(
+    public Optional<AutoAssignResult> autoAssignServerDomain(
             UUID serverId, String serverName, String serverIp, UUID zoneId, UUID userId) {
         ManagedZone zone;
 
@@ -379,12 +348,16 @@ public class DomainAssignmentService {
         return doAutoAssign(serverId, serverName, serverIp, zone, userId);
     }
 
-    private Optional<DomainAssignmentResponse> doAutoAssign(
+    private Optional<AutoAssignResult> doAutoAssign(
             UUID serverId, String serverName, String serverIp, ManagedZone zone, UUID userId) {
         Server server = serverService.getServerEntity(serverId);
         Optional<DomainAssignment> reusableAssignment = findReusableAssignment(server, zone);
         if (reusableAssignment.isPresent()) {
-            return Optional.of(DomainAssignmentMapper.toResponse(reusableAssignment.get(), zone.getZoneName()));
+            DomainAssignment existing = reusableAssignment.get();
+            DomainAssignmentResponse assignmentResp =
+                    DomainAssignmentMapper.toResponse(existing, zone.getZoneName());
+            Optional<DomainJobResponse> latest = domainAssignmentOrchestrator.getLatestJobForAssignment(existing.getId());
+            return Optional.of(new AutoAssignResult(assignmentResp, latest.orElse(null)));
         }
 
         String hostname = resolveUniqueHostname(server, serverName, zone.getZoneName());
@@ -403,50 +376,30 @@ public class DomainAssignmentService {
         assignment.setResourceId(serverId);
         assignment.setStatus(AssignmentStatus.PROVISIONING);
         assignment.setDesiredStateHash(computeStateHash("A", serverIp, zone.getDefaultTtl()));
-        assignment = domainAssignmentRepository.save(assignment);
-
-        ProviderAccount account = providerAccountService.findAccountOrThrow(zone.getProviderAccountId());
-        String decryptedToken = secretService.decryptSecret(account.getCredentialId());
-        Map<String, Object> settings = ProviderAccountMapper.deserializeSettings(account.getProviderSettings());
-        DnsProviderAdapter adapter = providerAdapterFactory.getAdapter(account.getProviderType());
-
-        try {
-            DnsRecord dnsRecord = new DnsRecord(null, hostname, DnsRecordType.A, serverIp, zone.getDefaultTtl(), false);
-            DnsRecord created = adapter.createOrUpsertRecord(zone.getZoneName(), zone.getProviderZoneId(),
-                    dnsRecord, decryptedToken, settings);
-
-            assignment.setProviderRecordId(created.providerRecordId());
-            assignment.setStatus(AssignmentStatus.DNS_CREATED);
-            domainAssignmentRepository.save(assignment);
-
-            domainEventService.recordEvent(assignment.getId(), zone.getId(),
-                    DomainEventAction.RECORD_CREATED, DomainEventOutcome.SUCCESS,
-                    created.providerRecordId(), "Auto-assigned DNS record: %s → %s".formatted(hostname, serverIp));
-        } catch (DnsProviderException e) {
-            assignment.setStatus(AssignmentStatus.FAILED);
-            domainAssignmentRepository.save(assignment);
-
-            domainEventService.recordEvent(assignment.getId(), zone.getId(),
-                    DomainEventAction.RECORD_CREATED, DomainEventOutcome.FAILURE,
-                    e.getProviderCorrelationId(), e.getMessage());
-
-            log.warn("Auto-assign DNS creation failed for server '{}': {}", serverName, e.getMessage());
-            return Optional.of(DomainAssignmentMapper.toResponse(assignment, zone.getZoneName()));
-        }
+        assignment = domainAssignmentRepository.saveAndFlush(assignment);
 
         try {
             auditService.log(AuditAction.DOMAIN_AUTO_ASSIGNED, "DOMAIN_ASSIGNMENT", assignment.getId(), userId,
-                    "Auto-assigned domain: %s → %s".formatted(hostname, serverIp));
+                    "Auto-assign queued: %s → %s".formatted(hostname, serverIp));
         } catch (Exception ignored) { }
 
-        // Best-effort async SSL provisioning
+        DomainJobResponse job;
         try {
-            provisioningOrchestrator.triggerProvisioning(assignment.getId(), null, userId);
+            job = domainAssignmentOrchestrator.triggerAssignment(assignment.getId(), userId);
         } catch (Exception e) {
-            log.warn("Auto-trigger SSL provisioning failed for {}: {}", hostname, e.getMessage());
+            log.error("Failed to trigger async domain assignment for '{}': {}", serverName, e.getMessage());
+            assignment.setStatus(AssignmentStatus.FAILED);
+            domainAssignmentRepository.save(assignment);
+            return Optional.of(new AutoAssignResult(
+                    DomainAssignmentMapper.toResponse(assignment, zone.getZoneName()),
+                    null
+            ));
         }
 
-        return Optional.of(DomainAssignmentMapper.toResponse(assignment, zone.getZoneName()));
+        return Optional.of(new AutoAssignResult(
+                DomainAssignmentMapper.toResponse(assignment, zone.getZoneName(), job.id()),
+                job
+        ));
     }
 
     private Optional<DomainAssignment> findReusableAssignment(Server server, ManagedZone zone) {
