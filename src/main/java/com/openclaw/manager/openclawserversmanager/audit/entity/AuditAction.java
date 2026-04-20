@@ -89,5 +89,9 @@ public enum AuditAction {
 
     // Server access control
     SERVER_ACCESS_GRANTED,
-    SERVER_ACCESS_REVOKED
+    SERVER_ACCESS_REVOKED,
+
+    // App installation
+    APP_INSTALLED,
+    APP_INSTALL_FAILED
 }
