@@ -68,9 +68,18 @@ public class AppInstallService {
             throw new ResourceNotFoundException("Server has no hostname or IP configured");
         }
         String hostname = resolveInstallHostname(server);
-        String apiOrigin = (req.apiOrigin() != null && !req.apiOrigin().isBlank())
-                ? req.apiOrigin()
-                : "https://" + hostname;
+        // apiOrigin is the ClawOps backend URL the chat app will call for auth,
+        // sessions, etc. Silently defaulting to "https://" + hostname (the
+        // chat's OWN domain) used to produce a stack that 404'd on every login
+        // request. Require it from the caller — the frontend already knows its
+        // backend URL and sends it.
+        if (req.apiOrigin() == null || req.apiOrigin().isBlank()) {
+            throw new IllegalArgumentException(
+                    "apiOrigin is required — pass the ClawOps backend's public URL "
+                            + "(e.g. https://clawops.example.com). The frontend pre-fills this; "
+                            + "direct API callers must include it explicitly.");
+        }
+        String apiOrigin = req.apiOrigin();
 
         long started = System.currentTimeMillis();
 
