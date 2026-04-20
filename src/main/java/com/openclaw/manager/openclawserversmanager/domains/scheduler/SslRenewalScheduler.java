@@ -1,5 +1,6 @@
 package com.openclaw.manager.openclawserversmanager.domains.scheduler;
 
+import com.openclaw.manager.openclawserversmanager.domains.dto.SslSchedulerStatus;
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslCertificate;
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslStatus;
 import com.openclaw.manager.openclawserversmanager.domains.repository.SslCertificateRepository;
@@ -13,9 +14,12 @@ import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -30,11 +34,19 @@ public class SslRenewalScheduler {
     private static final Pattern EXPIRY_PATTERN = Pattern.compile(
             "Expiry Date:\\s*(\\d{4}-\\d{2}-\\d{2})"
     );
+    private static final String RENEW_CRON = "0 0 3 * * *";
+    private static final String EXPIRY_CRON = "0 0 4 * * *";
 
     private final SslCertificateRepository sslCertificateRepository;
     private final ServerRepository serverRepository;
     private final SshService sshService;
     private final NotificationDispatchService notificationDispatchService;
+
+    // Live status the /scheduler-status endpoint reads. All writes happen inside the scheduled
+    // methods, which are serialised by Spring, so no extra synchronisation is needed.
+    private volatile Instant renewLastRunAt;
+    private volatile Instant expiryLastRunAt;
+    private volatile SslSchedulerStatus.RenewalOutcome lastOutcome = SslSchedulerStatus.RenewalOutcome.empty();
 
     public SslRenewalScheduler(SslCertificateRepository sslCertificateRepository,
                                ServerRepository serverRepository,
@@ -46,17 +58,41 @@ public class SslRenewalScheduler {
         this.notificationDispatchService = notificationDispatchService;
     }
 
+    public SslSchedulerStatus getStatus() {
+        return new SslSchedulerStatus(
+                renewLastRunAt,
+                nextFireAt(RENEW_CRON),
+                lastOutcome,
+                expiryLastRunAt,
+                nextFireAt(EXPIRY_CRON),
+                RENEWAL_WINDOW_DAYS
+        );
+    }
+
+    private static Instant nextFireAt(String cron) {
+        try {
+            LocalDateTime next = CronExpression.parse(cron).next(LocalDateTime.now(ZoneOffset.UTC));
+            return next != null ? next.toInstant(ZoneOffset.UTC) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /**
      * Runs daily at 03:00 UTC. Finds certificates expiring within 30 days and attempts renewal.
      */
-    @Scheduled(cron = "0 0 3 * * *")
+    @Scheduled(cron = RENEW_CRON)
     public void renewExpiringCertificates() {
+        long started = System.currentTimeMillis();
         Instant renewalThreshold = Instant.now().plus(RENEWAL_WINDOW_DAYS, ChronoUnit.DAYS);
         List<SslCertificate> expiring = sslCertificateRepository
                 .findByStatusAndExpiresAtBefore(SslStatus.ACTIVE, renewalThreshold);
 
         if (expiring.isEmpty()) {
             log.debug("No certificates due for renewal");
+            renewLastRunAt = Instant.now();
+            lastOutcome = new SslSchedulerStatus.RenewalOutcome(0, 0, 0,
+                    System.currentTimeMillis() - started);
             return;
         }
 
@@ -104,6 +140,9 @@ public class SslRenewalScheduler {
         }
 
         log.info("SSL auto-renewal complete: {} renewed, {} failed out of {} due", renewed, failed, expiring.size());
+        renewLastRunAt = Instant.now();
+        lastOutcome = new SslSchedulerStatus.RenewalOutcome(
+                renewed, failed, expiring.size(), System.currentTimeMillis() - started);
 
         if (failed > 0) {
             try {
@@ -119,7 +158,7 @@ public class SslRenewalScheduler {
     /**
      * Runs daily at 04:00 UTC. Marks expired certificates.
      */
-    @Scheduled(cron = "0 0 4 * * *")
+    @Scheduled(cron = EXPIRY_CRON)
     public void markExpiredCertificates() {
         List<SslCertificate> active = sslCertificateRepository.findByStatus(SslStatus.ACTIVE);
         int expired = 0;
@@ -132,6 +171,8 @@ public class SslRenewalScheduler {
                 log.warn("Certificate for {} has expired", cert.getHostname());
             }
         }
+
+        expiryLastRunAt = Instant.now();
 
         if (expired > 0) {
             log.warn("Marked {} certificates as expired", expired);

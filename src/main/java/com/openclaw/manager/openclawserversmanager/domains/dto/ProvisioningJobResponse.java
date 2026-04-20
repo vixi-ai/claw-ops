@@ -17,6 +17,7 @@ public record ProvisioningJobResponse(
         int maxRetries,
         String logs,
         String errorMessage,
+        String acmeTxtRecordId,
         UUID triggeredBy,
         Instant createdAt,
         Instant startedAt,

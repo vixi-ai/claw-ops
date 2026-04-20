@@ -1,10 +1,14 @@
 package com.openclaw.manager.openclawserversmanager.domains.controller;
 
+import com.openclaw.manager.openclawserversmanager.audit.dto.AuditLogResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.ProvisioningJobResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslCertificateResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslDashboardResponse;
+import com.openclaw.manager.openclawserversmanager.domains.dto.SslProbeResponse;
+import com.openclaw.manager.openclawserversmanager.domains.dto.SslSchedulerStatus;
 import com.openclaw.manager.openclawserversmanager.domains.dto.TriggerProvisioningRequest;
 import com.openclaw.manager.openclawserversmanager.domains.entity.ProvisioningJobStatus;
+import com.openclaw.manager.openclawserversmanager.domains.scheduler.SslRenewalScheduler;
 import com.openclaw.manager.openclawserversmanager.domains.service.ProvisioningOrchestrator;
 import com.openclaw.manager.openclawserversmanager.domains.service.SslService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -32,11 +36,14 @@ public class SslController {
 
     private final SslService sslService;
     private final ProvisioningOrchestrator provisioningOrchestrator;
+    private final SslRenewalScheduler sslRenewalScheduler;
 
     public SslController(SslService sslService,
-                         ProvisioningOrchestrator provisioningOrchestrator) {
+                         ProvisioningOrchestrator provisioningOrchestrator,
+                         SslRenewalScheduler sslRenewalScheduler) {
         this.sslService = sslService;
         this.provisioningOrchestrator = provisioningOrchestrator;
+        this.sslRenewalScheduler = sslRenewalScheduler;
     }
 
     // ── Provisioning (async) ──────────────────────────────
@@ -111,6 +118,38 @@ public class SslController {
         return sslService.getCertificateForServer(serverId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/by-assignment/{assignmentId}")
+    @Operation(summary = "Get SSL certificate for a domain assignment")
+    public ResponseEntity<SslCertificateResponse> getByAssignment(@PathVariable UUID assignmentId) {
+        return sslService.getCertificateByAssignment(assignmentId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    // ── Live-wire probe ──────────────────────────────
+
+    @GetMapping("/{id}/probe")
+    @Operation(summary = "Live TLS probe (HTTP+HTTPS reachability + wire-side cert expiry). Read-only.")
+    public ResponseEntity<SslProbeResponse> probe(@PathVariable UUID id) {
+        return ResponseEntity.ok(sslService.probe(id));
+    }
+
+    // ── Audit trail ──────────────────────────────
+
+    @GetMapping("/{id}/audit-log")
+    @Operation(summary = "Per-certificate audit history (provisioned/renewed/checked/removed events)")
+    public ResponseEntity<Page<AuditLogResponse>> getAuditLog(@PathVariable UUID id, Pageable pageable) {
+        return ResponseEntity.ok(sslService.getAuditLog(id, pageable));
+    }
+
+    // ── Auto-renewal transparency ──────────────────────────────
+
+    @GetMapping("/scheduler-status")
+    @Operation(summary = "Auto-renewal scheduler: last run timestamp, last outcome, next run")
+    public ResponseEntity<SslSchedulerStatus> getSchedulerStatus() {
+        return ResponseEntity.ok(sslRenewalScheduler.getStatus());
     }
 
     // ── Certificate operations ──────────────────────────────

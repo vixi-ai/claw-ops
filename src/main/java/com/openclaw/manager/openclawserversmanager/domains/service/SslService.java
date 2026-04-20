@@ -1,10 +1,12 @@
 package com.openclaw.manager.openclawserversmanager.domains.service;
 
+import com.openclaw.manager.openclawserversmanager.audit.dto.AuditLogResponse;
 import com.openclaw.manager.openclawserversmanager.audit.entity.AuditAction;
 import com.openclaw.manager.openclawserversmanager.audit.service.AuditService;
 import com.openclaw.manager.openclawserversmanager.common.exception.ResourceNotFoundException;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslCertificateResponse;
 import com.openclaw.manager.openclawserversmanager.domains.dto.SslDashboardResponse;
+import com.openclaw.manager.openclawserversmanager.domains.dto.SslProbeResponse;
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslCertificate;
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslStatus;
 import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
@@ -49,19 +51,22 @@ public class SslService {
     private final AuditService auditService;
     private final NginxConfigService nginxConfigService;
     private final AcmeService acmeService;
+    private final SslVerificationService sslVerificationService;
 
     public SslService(SslCertificateRepository sslCertificateRepository,
                       ServerService serverService,
                       SshService sshService,
                       AuditService auditService,
                       NginxConfigService nginxConfigService,
-                      AcmeService acmeService) {
+                      AcmeService acmeService,
+                      SslVerificationService sslVerificationService) {
         this.sslCertificateRepository = sslCertificateRepository;
         this.serverService = serverService;
         this.sshService = sshService;
         this.auditService = auditService;
         this.nginxConfigService = nginxConfigService;
         this.acmeService = acmeService;
+        this.sslVerificationService = sslVerificationService;
     }
 
     // ── Queries ──────────────────────────────
@@ -77,6 +82,45 @@ public class SslService {
 
     public Page<SslCertificateResponse> getAllCertificates(Pageable pageable) {
         return sslCertificateRepository.findAll(pageable).map(SslCertificateMapper::toResponse);
+    }
+
+    public Optional<SslCertificateResponse> getCertificateByAssignment(UUID assignmentId) {
+        return sslCertificateRepository.findByAssignmentId(assignmentId)
+                .map(SslCertificateMapper::toResponse);
+    }
+
+    // ── Live-wire TLS probe ──────────────────────────────
+
+    /**
+     * Runs a live probe (HTTP/HTTPS reachability + wire-side TLS expiry) for the cert's hostname.
+     * Read-only; does not mutate the cert row. Useful when the stored status looks ACTIVE but
+     * consumers report 404/SSL errors — compares DB state to ground truth from the network.
+     */
+    public SslProbeResponse probe(UUID certId) {
+        SslCertificate cert = findCertOrThrow(certId);
+        if (cert.getServerId() == null) {
+            throw new DomainException("Cannot probe — SSL certificate is not bound to a server");
+        }
+        Server server = serverService.getServerEntity(cert.getServerId());
+        SslVerificationService.ProbeResult p = sslVerificationService.probe(server, cert.getHostname());
+        return new SslProbeResponse(
+                cert.getHostname(),
+                p.httpCode(), p.httpReachable(),
+                p.httpsCode(), p.httpsReachable(),
+                p.certExpiry(), p.tlsPresent(), p.tlsValid(),
+                Instant.now()
+        );
+    }
+
+    // ── Audit trail ──────────────────────────────
+
+    /**
+     * Per-certificate audit history — "provisioned by user X at …", "renewed by scheduler at …".
+     * Filters audit_logs by entityType='SSL_CERTIFICATE' and entityId=certId.
+     */
+    public Page<AuditLogResponse> getAuditLog(UUID certId, Pageable pageable) {
+        findCertOrThrow(certId); // validate cert exists (404 otherwise)
+        return auditService.getLogsForEntity("SSL_CERTIFICATE", certId, pageable);
     }
 
     // ── Renew ──────────────────────────────

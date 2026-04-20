@@ -20,6 +20,7 @@ public final class ProvisioningJobMapper {
                 job.getMaxRetries(),
                 job.getLogs(),
                 job.getErrorMessage(),
+                job.getAcmeTxtRecordId(),
                 job.getTriggeredBy(),
                 job.getCreatedAt(),
                 job.getStartedAt(),
