@@ -137,6 +137,28 @@ public class NginxConfigService {
     }
 
     /**
+     * Tears down a stale host-nginx config before the chat-app sidecar takes
+     * ownership of port 80/443. Removes the managed site file, reloads nginx
+     * if it is running, and swallows all errors — the chat installer is
+     * about to stop nginx anyway, so nothing here is worth blocking on.
+     *
+     * <p>Single idempotent SSH round-trip. Safe to call on servers that have
+     * never had SSL provisioned.
+     */
+    public void removeHostManagedConfigIfPresent(Server server, String hostname) {
+        HostnameValidator.requireValid(hostname);
+        String path = MANAGED_DIR + "/" + hostname + ".conf";
+        sshService.executeCommand(server,
+                "if [ -f " + path + " ]; then "
+                        + "sudo rm -f " + path + "; "
+                        + "sudo nginx -s reload 2>/dev/null || true; "
+                        + "echo REMOVED; "
+                        + "else echo ABSENT; fi",
+                10);
+        log.info("removeHostManagedConfigIfPresent host='{}' path='{}'", server.getName(), path);
+    }
+
+    /**
      * Tests nginx config and gracefully reloads. Returns the test result.
      * Throws DomainException if nginx -t fails.
      */

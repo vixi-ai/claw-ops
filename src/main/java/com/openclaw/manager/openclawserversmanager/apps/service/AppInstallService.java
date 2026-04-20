@@ -1,35 +1,38 @@
 package com.openclaw.manager.openclawserversmanager.apps.service;
 
+import com.openclaw.manager.openclawserversmanager.apps.config.ChatInstallerProperties;
 import com.openclaw.manager.openclawserversmanager.apps.dto.ChatAppStatus;
 import com.openclaw.manager.openclawserversmanager.apps.dto.ChatInstallRequest;
 import com.openclaw.manager.openclawserversmanager.apps.dto.ChatInstallResult;
 import com.openclaw.manager.openclawserversmanager.audit.entity.AuditAction;
 import com.openclaw.manager.openclawserversmanager.audit.service.AuditService;
 import com.openclaw.manager.openclawserversmanager.common.exception.ResourceNotFoundException;
+import com.openclaw.manager.openclawserversmanager.domains.entity.SslCertificate;
+import com.openclaw.manager.openclawserversmanager.domains.repository.SslCertificateRepository;
+import com.openclaw.manager.openclawserversmanager.domains.service.NginxConfigService;
 import com.openclaw.manager.openclawserversmanager.servers.entity.Server;
 import com.openclaw.manager.openclawserversmanager.servers.service.ServerService;
 import com.openclaw.manager.openclawserversmanager.ssh.model.CommandResult;
 import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 /**
- * Deploys bundled third-party apps (currently just "claw-chat") onto managed servers by
- * uploading the install artifacts from the classpath and running the installer script
- * over SSH. Status is probed by inspecting the container via {@code docker ps}.
+ * Deploys bundled third-party apps (currently just "claw-chat") onto managed
+ * servers by piping the upstream bootstrap script into bash over SSH. The
+ * bootstrap installs OS deps (Docker, Node, Claude CLI) and then downloads a
+ * versioned installer tarball from the pinned claw-ops-chat release.
+ *
+ * <p>Container status is probed by inspecting {@code docker ps}.
  */
 @Service
 public class AppInstallService {
 
     private static final Logger log = LoggerFactory.getLogger(AppInstallService.class);
-    private static final String REMOTE_STAGING_DIR = "/tmp/claw-chat-install";
-    private static final String REMOTE_NGINX_DIR = REMOTE_STAGING_DIR + "/nginx";
     private static final int INSTALL_TIMEOUT_SECONDS = 600;
     private static final int STATUS_PROBE_TIMEOUT_SECONDS = 15;
     private static final int MAX_OUTPUT_BYTES = 16 * 1024;
@@ -37,18 +40,27 @@ public class AppInstallService {
     private final ServerService serverService;
     private final SshService sshService;
     private final AuditService auditService;
+    private final ChatInstallerProperties installerProps;
+    private final NginxConfigService nginxConfigService;
+    private final SslCertificateRepository sslCertificateRepository;
 
     public AppInstallService(ServerService serverService,
                              SshService sshService,
-                             AuditService auditService) {
+                             AuditService auditService,
+                             ChatInstallerProperties installerProps,
+                             NginxConfigService nginxConfigService,
+                             SslCertificateRepository sslCertificateRepository) {
         this.serverService = serverService;
         this.sshService = sshService;
         this.auditService = auditService;
+        this.installerProps = installerProps;
+        this.nginxConfigService = nginxConfigService;
+        this.sslCertificateRepository = sslCertificateRepository;
     }
 
     /**
-     * Upload the installer bundle + run it on the server. Returns the install's exit
-     * code + truncated output so the frontend can render the log.
+     * Run bootstrap.sh over SSH to install the chat stack. Returns exit code +
+     * truncated combined stdout/stderr so the frontend can render the log.
      */
     public ChatInstallResult installChatApp(UUID serverId, ChatInstallRequest req, UUID userId) {
         Server server = serverService.getServerEntity(serverId);
@@ -62,28 +74,28 @@ public class AppInstallService {
 
         long started = System.currentTimeMillis();
 
-        // 1. Upload installer files via SFTP. All three are tiny text artifacts.
+        // 1. Tear down any host-nginx openclaw-managed config for this hostname
+        // so the chat sidecar can own port 80/443 without stale leftovers.
         try {
-            uploadResource(server, "apps/chat/install.sh", REMOTE_STAGING_DIR + "/install.sh");
-            uploadResource(server, "apps/chat/http-only.conf", REMOTE_NGINX_DIR + "/http-only.conf");
-            uploadResource(server, "apps/chat/https.conf", REMOTE_NGINX_DIR + "/https.conf");
-        } catch (IOException e) {
-            log.error("Failed to upload chat installer to '{}': {}", server.getName(), e.getMessage(), e);
-            return new ChatInstallResult(-1,
-                    "Failed to upload installer: " + e.getMessage(),
-                    System.currentTimeMillis() - started);
+            nginxConfigService.removeHostManagedConfigIfPresent(server, hostname);
+        } catch (Exception e) {
+            // Non-fatal: bootstrap.sh will stop host nginx anyway.
+            log.warn("Failed to pre-clean host-nginx config on '{}': {}", server.getName(), e.getMessage());
         }
 
-        // 2. Run install.sh with env vars. sudo -E preserves our vars across the sudo boundary.
+        // 2. Build and run the bootstrap pipeline. sudo -E preserves every
+        // env var we set on the same line.
         String cmd = new StringBuilder()
-                .append("chmod +x ").append(REMOTE_STAGING_DIR).append("/install.sh && ")
-                .append("cd ").append(REMOTE_STAGING_DIR).append(" && ")
-                .append("sudo -E ")
+                .append("curl -fsSL ").append(shellQuote(installerProps.getBootstrapUrl()))
+                .append(" | sudo -E ")
+                .append("INSTALLER_REPO=").append(shellQuote(installerProps.getRepo())).append(' ')
+                .append("INSTALLER_TAG=").append(shellQuote(installerProps.getTag())).append(' ')
+                .append("INSTALLER_SHA256=").append(shellQuote(installerProps.getSha256())).append(' ')
                 .append("HOSTNAME=").append(shellQuote(hostname)).append(' ')
                 .append("ALLOWED_EMAIL=").append(shellQuote(req.allowedEmail())).append(' ')
                 .append("NEXT_PUBLIC_API_ORIGIN=").append(shellQuote(apiOrigin)).append(' ')
                 .append("ALLOWED_ORIGINS=").append(shellQuote("https://" + hostname)).append(' ')
-                .append("bash install.sh 2>&1")
+                .append("bash 2>&1")
                 .toString();
 
         CommandResult res = sshService.executeCommand(server, cmd, INSTALL_TIMEOUT_SECONDS);
@@ -95,6 +107,15 @@ public class AppInstallService {
 
         try {
             if (res.exitCode() == 0) {
+                // Chat sidecar now owns 80/443 — update the SSL cert's ownership flag
+                // so future probes / re-provisioning operate in co-existence mode.
+                sslCertificateRepository.findByServerId(serverId).ifPresent(cert -> {
+                    if (cert.isHostNginxManaged()) {
+                        cert.setHostNginxManaged(false);
+                        sslCertificateRepository.save(cert);
+                        log.info("Flipped SslCertificate.hostNginxManaged=false for server '{}'", server.getName());
+                    }
+                });
                 auditService.log(AuditAction.APP_INSTALLED, "CHAT_APP", serverId, userId,
                         "Chat app installed on '%s' (%s)".formatted(server.getName(), hostname));
             } else {
@@ -126,14 +147,6 @@ public class AppInstallService {
     /* ---------------------------------------------------------------- */
     /*  Internals                                                        */
     /* ---------------------------------------------------------------- */
-
-    private void uploadResource(Server server, String classpath, String remotePath) throws IOException {
-        ClassPathResource res = new ClassPathResource(classpath);
-        try (var in = res.getInputStream()) {
-            byte[] bytes = in.readAllBytes();
-            sshService.uploadFile(server, bytes, remotePath);
-        }
-    }
 
     private static String resolveInstallHostname(Server server) {
         // Prefer the server's subdomain + rootDomain (the SSL-provisioned hostname).
