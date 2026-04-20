@@ -266,23 +266,54 @@ public class AcmeService {
     }
 
     /**
-     * Installs nginx + certbot on the remote host via the distro-appropriate package manager
-     * ({@link SystemPackageService}), then starts nginx. Handles Debian/Ubuntu, RHEL family,
-     * Alpine, Arch, and openSUSE. Falls back to snap for certbot on Ubuntu images where apt
-     * lacks the package. Throws {@link DomainException} with actionable text on failure.
+     * Installs prerequisites for SSL provisioning:
+     * <ul>
+     *   <li>Certbot always (needed for DNS-01 regardless of who owns :80).</li>
+     *   <li>Nginx only when port 80 is free — if another process (docker-proxy, traefik,
+     *       caddy, …) already holds it, we install certbot only and leave the user's
+     *       reverse proxy alone. The cert is issued and written to disk at
+     *       {@code /etc/letsencrypt/live/<hostname>/} for the user's proxy to consume.</li>
+     * </ul>
+     *
+     * @return outcome describing whether host nginx is now managed by ClawOps
      */
-    public void ensureNginxAndCertbot(Server server) {
-        SystemPackageService.InstallResult result = systemPackageService.ensureInstalled(server, "nginx", "certbot");
-        if (!result.success()) {
+    public InstallOutcome ensureNginxAndCertbot(Server server) {
+        StringBuilder rawLog = new StringBuilder();
+
+        // 1. Probe port 80 first — decides whether nginx install is safe.
+        SystemPackageService.PortOccupancy occ = systemPackageService.probePorts(server, 80, 443);
+        String holder80 = occ.processOn(80);
+        boolean port80Free = !occ.isOccupied(80);
+        rawLog.append("Port 80 status: ")
+                .append(port80Free ? "free" : "occupied by " + holder80)
+                .append(port80Free ? "" : "; port 443 occupied by " + occ.processOn(443))
+                .append("\n");
+
+        // 2. Install packages. When :80 is occupied we install certbot only.
+        String[] pkgs = port80Free ? new String[]{"nginx", "certbot"} : new String[]{"certbot"};
+        SystemPackageService.InstallResult install = systemPackageService.ensureInstalled(server, pkgs);
+        rawLog.append("Install target: ").append(String.join(", ", pkgs)).append("\n");
+        rawLog.append(install.rawOutput()).append("\n");
+
+        if (!install.success()) {
             log.error("Package install failed on '{}' (distro {}): {}", server.getName(),
-                    result.distroId(), result.errorMessage());
-            log.debug("Install raw output:\n{}", result.rawOutput());
-            throw new DomainException(result.errorMessage() != null
-                    ? result.errorMessage()
-                    : "Failed to install nginx + certbot on " + server.getName());
+                    install.distroId(), install.errorMessage());
+            throw new DomainException(install.errorMessage() != null
+                    ? install.errorMessage()
+                    : "Failed to install prerequisites on " + server.getName());
         }
 
-        // Start nginx — systemd first (most distros), fall back to OpenRC (Alpine) or service cmd.
+        if (!port80Free) {
+            // Co-existence mode — skip nginx start entirely.
+            String msg = "Port 80 held by '" + holder80 + "'. Skipped host nginx install; "
+                    + "cert will be issued via DNS-01 and left at "
+                    + "/etc/letsencrypt/live/<hostname>/ for your reverse proxy to consume.";
+            rawLog.append(msg).append("\n");
+            log.info("[{}] {}", server.getName(), msg);
+            return new InstallOutcome(true, false, holder80, rawLog.toString());
+        }
+
+        // 3. Start nginx — systemd first (most distros), fall back to OpenRC (Alpine) or service cmd.
         CommandResult start = sshService.executeCommand(server,
                 "( sudo systemctl enable --now nginx 2>/dev/null ) " +
                 "|| ( sudo rc-update add nginx default 2>/dev/null && sudo rc-service nginx start 2>/dev/null ) " +
@@ -291,17 +322,40 @@ public class AcmeService {
         if (!start.stdout().contains("NGINX_START_DONE")) {
             log.warn("nginx start command did not confirm OK on '{}' (stderr: {})",
                     server.getName(), start.stderr());
+            rawLog.append("Nginx start command did not confirm OK. stderr: ")
+                    .append(start.stderr()).append("\n");
+        } else {
+            rawLog.append("Nginx installed and started\n");
         }
+
+        return new InstallOutcome(true, true, null, rawLog.toString());
     }
 
     /**
-     * @deprecated Use {@link #ensureNginxAndCertbot(Server)} which also installs certbot
-     * and works across distros. Kept for API compatibility.
+     * @deprecated Use {@link #ensureNginxAndCertbot(Server)} which returns detailed outcome.
+     * Kept for API compatibility.
      */
     @Deprecated
     public void ensureNginxInstalled(Server server) {
         ensureNginxAndCertbot(server);
     }
+
+    /**
+     * Outcome of ensuring prerequisites are installed on the server.
+     *
+     * @param certbotInstalled  certbot binary is on PATH
+     * @param hostNginxManaged  {@code true} if ClawOps installed and started host nginx;
+     *                          {@code false} if port 80 was already in use by another
+     *                          process and we left it alone
+     * @param portHolderName    when {@code hostNginxManaged=false}, the process holding port 80
+     *                          (e.g. {@code "docker-proxy"}); {@code null} when managed
+     * @param rawLog            raw install log to append to the job's log field
+     */
+    public record InstallOutcome(
+            boolean certbotInstalled,
+            boolean hostNginxManaged,
+            String portHolderName,
+            String rawLog) {}
 
     public record CertbotResult(int exitCode, String output, String error, String txtRecordId) {
         public boolean success() { return exitCode == 0; }

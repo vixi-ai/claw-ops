@@ -179,15 +179,21 @@ public class SslService {
             try {
                 Server server = serverService.getServerEntity(cert.getServerId());
 
-                // Delete certbot cert
+                // Always delete the certbot cert from disk + revoke.
                 acmeService.deleteCertbotCert(server, hostname);
 
-                // Remove nginx config from managed directory + graceful reload
-                nginxConfigService.removeConfig(server, hostname);
-                try {
-                    nginxConfigService.testAndReload(server);
-                } catch (Exception e) {
-                    log.warn("Nginx reload failed after removing config for {}: {}", hostname, e.getMessage());
+                if (cert.isHostNginxManaged()) {
+                    // Managed mode: remove our vhost config + reload nginx.
+                    nginxConfigService.removeConfig(server, hostname);
+                    try {
+                        nginxConfigService.testAndReload(server);
+                    } catch (Exception e) {
+                        log.warn("Nginx reload failed after removing config for {}: {}", hostname, e.getMessage());
+                    }
+                } else {
+                    // Co-existence mode: we never installed nginx / wrote a config. The user's
+                    // reverse proxy owns port 80/443 — leave it alone.
+                    log.info("Skipping nginx cleanup for '{}' — host nginx is not managed by ClawOps", hostname);
                 }
 
                 // Update server flag

@@ -21,6 +21,7 @@ public final class SslCertificateMapper {
                 cert.getExpiresAt(),
                 cert.getLastRenewedAt(),
                 cert.getLastError(),
+                cert.isHostNginxManaged(),
                 cert.getCreatedAt(),
                 cert.getUpdatedAt()
         );

@@ -17,6 +17,7 @@ public record SslCertificateResponse(
         Instant expiresAt,
         Instant lastRenewedAt,
         String lastError,
+        boolean hostNginxManaged,
         Instant createdAt,
         Instant updatedAt
 ) {

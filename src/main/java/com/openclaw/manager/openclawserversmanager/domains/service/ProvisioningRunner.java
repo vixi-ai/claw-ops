@@ -104,15 +104,22 @@ public class ProvisioningRunner {
         job.appendLog("Starting SSL provisioning for " + hostname);
 
         try {
-            // Step 1: Ensure nginx + certbot installed (distro-aware — apt/dnf/apk/pacman/zypper).
+            // Step 1: Ensure prerequisites installed (distro-aware). Returns an InstallOutcome
+            // that tells us whether host nginx is managed (port 80 was free) or co-existing
+            // with another process (port 80 held by docker-proxy / traefik / caddy / etc.).
             if (isCancelled(job)) return;
             updateStep(job, ProvisioningStep.PENDING_DNS, "Ensuring nginx + certbot are installed");
+            AcmeService.InstallOutcome install;
             try {
-                acmeService.ensureNginxAndCertbot(server);
+                install = acmeService.ensureNginxAndCertbot(server);
             } catch (Exception installEx) {
                 failJob(job, ProvisioningStep.FAILED_RETRYABLE,
                         "Install step failed: " + installEx.getMessage());
                 return;
+            }
+            if (install.rawLog() != null && !install.rawLog().isBlank()) {
+                job.appendLog(install.rawLog());
+                jobRepository.save(job);
             }
 
             // Step 2: Run certbot DNS-01 (handles TXT record creation, propagation, and cert issuance)
@@ -139,33 +146,47 @@ public class ProvisioningRunner {
 
             updateStep(job, ProvisioningStep.CERT_ISSUED, "Certificate issued successfully");
 
-            // Step 3: Deploy nginx config
-            if (isCancelled(job)) return;
-            updateStep(job, ProvisioningStep.DEPLOYING_CONFIG, "Deploying nginx HTTPS config");
-            nginxConfigService.ensureManagedDirectory(server);
+            // Figure out target port from any pre-existing cert (user may have set one).
             int targetPort = sslConfig.getTargetPort();
             Optional<SslCertificate> existingCert = sslCertificateRepository.findByAssignmentId(assignment.getId());
             if (existingCert.isPresent() && existingCert.get().getTargetPort() > 0) {
                 targetPort = existingCert.get().getTargetPort();
             }
-            nginxConfigService.deployConfig(server, hostname, assignment.getId().toString(), targetPort);
 
-            // Test and reload nginx
-            try {
-                nginxConfigService.testAndReload(server);
-            } catch (Exception e) {
-                nginxConfigService.removeConfig(server, hostname);
-                try { nginxConfigService.testAndReload(server); } catch (Exception ignored) { }
-                failJob(job, ProvisioningStep.FAILED_PERMANENT, "Nginx config failed: " + e.getMessage());
-                return;
+            Instant certExpiry = null;
+            if (install.hostNginxManaged()) {
+                // Step 3a: Deploy nginx config (only when we manage nginx).
+                if (isCancelled(job)) return;
+                updateStep(job, ProvisioningStep.DEPLOYING_CONFIG, "Deploying nginx HTTPS config");
+                nginxConfigService.ensureManagedDirectory(server);
+                nginxConfigService.deployConfig(server, hostname, assignment.getId().toString(), targetPort);
+
+                try {
+                    nginxConfigService.testAndReload(server);
+                } catch (Exception e) {
+                    nginxConfigService.removeConfig(server, hostname);
+                    try { nginxConfigService.testAndReload(server); } catch (Exception ignored) { }
+                    failJob(job, ProvisioningStep.FAILED_PERMANENT, "Nginx config failed: " + e.getMessage());
+                    return;
+                }
+
+                // Step 4a: Verify HTTPS — only meaningful when we own port 443.
+                if (isCancelled(job)) return;
+                updateStep(job, ProvisioningStep.VERIFYING, "Verifying HTTPS endpoint and TLS certificate");
+                SslVerificationService.VerificationResult verification = verificationService.verify(server, hostname);
+                job.appendLog("Verification: HTTPS=%s, TLS=%s, expiry=%s".formatted(
+                        verification.httpsReachable(), verification.tlsValid(), verification.certExpiry()));
+                certExpiry = verification.certExpiry();
+            } else {
+                // Co-existence mode: host nginx is NOT managed by us. Skip DEPLOYING_CONFIG
+                // and VERIFYING entirely — the cert is on disk, the user's reverse proxy
+                // will pick it up. Use certbot's default 90-day validity for expiresAt.
+                job.appendLog(("Host nginx not managed (port 80 held by '%s'). "
+                        + "Certificate is on disk at /etc/letsencrypt/live/%s/. "
+                        + "Mount fullchain.pem + privkey.pem into your reverse proxy "
+                        + "(nginx / traefik / caddy / docker-proxy).")
+                        .formatted(install.portHolderName(), hostname));
             }
-
-            // Step 4: Verify HTTPS
-            if (isCancelled(job)) return;
-            updateStep(job, ProvisioningStep.VERIFYING, "Verifying HTTPS endpoint and TLS certificate");
-            SslVerificationService.VerificationResult verification = verificationService.verify(server, hostname);
-            job.appendLog("Verification: HTTPS=%s, TLS=%s, expiry=%s".formatted(
-                    verification.httpsReachable(), verification.tlsValid(), verification.certExpiry()));
 
             // Step 5: Complete
             updateStep(job, ProvisioningStep.COMPLETED, "SSL provisioning completed successfully");
@@ -176,12 +197,13 @@ public class ProvisioningRunner {
             cert.setStatus(SslStatus.ACTIVE);
             cert.setAdminEmail(email);
             cert.setTargetPort(targetPort);
-            cert.setExpiresAt(verification.certExpiry() != null
-                    ? verification.certExpiry()
+            cert.setExpiresAt(certExpiry != null
+                    ? certExpiry
                     : Instant.now().plus(90, ChronoUnit.DAYS));
             cert.setLastRenewedAt(Instant.now());
             cert.setLastError(null);
             cert.setProvisioningJobId(job.getId());
+            cert.setHostNginxManaged(install.hostNginxManaged());
             sslCertificateRepository.save(cert);
 
             try {

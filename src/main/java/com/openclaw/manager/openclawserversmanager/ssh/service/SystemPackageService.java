@@ -252,6 +252,96 @@ public class SystemPackageService {
     /*  Types                                                            */
     /* ---------------------------------------------------------------- */
 
+    /* ---------------------------------------------------------------- */
+    /*  Port-occupancy probe                                             */
+    /* ---------------------------------------------------------------- */
+
+    /**
+     * Probes which of the given TCP ports are currently bound on the server, and identifies
+     * what is holding them (docker-proxy / nginx / apache / ...). Used by the SSL provisioning
+     * flow to decide whether to install & start host nginx or leave the port alone.
+     */
+    public PortOccupancy probePorts(Server server, int... ports) {
+        if (ports == null || ports.length == 0) {
+            return new PortOccupancy(Collections.emptyMap());
+        }
+        String cmd =
+                "( ss -tlnp 2>/dev/null || sudo ss -tlnp 2>/dev/null || sudo netstat -tlnp 2>/dev/null ) " +
+                        "| awk 'NR>1 {print}' || true";
+        CommandResult r = sshService.executeCommand(server, cmd, 20);
+        String out = r.stdout() == null ? "" : r.stdout();
+
+        Map<Integer, PortHolder> byPort = new LinkedHashMap<>();
+        for (int port : ports) {
+            PortHolder holder = parseHolder(out, port);
+            byPort.put(port, holder);
+        }
+        return new PortOccupancy(byPort);
+    }
+
+    private static PortHolder parseHolder(String nsOutput, int port) {
+        // Match any line that has "LISTEN ... :<port> ..." (ss or netstat format).
+        // `ss -tlnp` lines look like:
+        //   LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("docker-proxy",pid=334501,fd=8))
+        // `netstat -tlnp` lines look like:
+        //   tcp 0 0 0.0.0.0:80 0.0.0.0:* LISTEN 334501/docker-proxy
+        String[] lines = nsOutput.split("\\r?\\n");
+        String portToken = ":" + port;
+        for (String line : lines) {
+            if (!line.contains(portToken)) continue;
+            // Must be the LOCAL address token, not the peer address or random match
+            // — accept the line if the token appears before "0.0.0.0:*" or "[::]:*".
+            boolean isLocal = line.contains(portToken + " ") || line.endsWith(portToken)
+                    || line.contains(portToken + "\t");
+            if (!isLocal) continue;
+            if (!line.contains("LISTEN")) continue;
+            // Extract process name
+            String process = extractProcess(line);
+            return new PortHolder(true, process, line.trim());
+        }
+        return new PortHolder(false, null, null);
+    }
+
+    private static String extractProcess(String line) {
+        // ss format: users:(("docker-proxy",pid=334501,fd=8))
+        int idx = line.indexOf("users:((\"");
+        if (idx != -1) {
+            int start = idx + "users:((\"".length();
+            int end = line.indexOf('"', start);
+            if (end != -1) return line.substring(start, end);
+        }
+        // netstat format: 334501/docker-proxy
+        int slash = line.lastIndexOf('/');
+        if (slash != -1 && slash < line.length() - 1) {
+            String tail = line.substring(slash + 1).trim();
+            // Guard against accidental matches (paths); process names usually don't contain '/'
+            if (!tail.isEmpty() && !tail.contains("/") && !tail.contains(" ")) {
+                return tail;
+            }
+        }
+        return "unknown";
+    }
+
+    public record PortHolder(boolean occupied, String processName, String rawLine) {}
+
+    public record PortOccupancy(Map<Integer, PortHolder> byPort) {
+        public PortOccupancy {
+            byPort = byPort == null ? Collections.emptyMap() : Map.copyOf(byPort);
+        }
+        public boolean isOccupied(int port) {
+            PortHolder h = byPort.get(port);
+            return h != null && h.occupied();
+        }
+        public String processOn(int port) {
+            PortHolder h = byPort.get(port);
+            return h == null ? null : h.processName();
+        }
+    }
+
+    /* ---------------------------------------------------------------- */
+    /*  Install variants                                                 */
+    /* ---------------------------------------------------------------- */
+
     public enum Family { DEBIAN, RHEL, ALPINE, ARCH, SUSE, UNKNOWN }
 
     public enum Status { ALREADY_PRESENT, INSTALLED, FAILED }

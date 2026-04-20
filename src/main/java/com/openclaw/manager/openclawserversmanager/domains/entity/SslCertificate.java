@@ -52,6 +52,15 @@ public class SslCertificate {
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
+    /**
+     * {@code true} when ClawOps installed + started host nginx and wrote the vhost config
+     * for this certificate; {@code false} when port 80 was already in use at provisioning
+     * time and we issued the cert without touching nginx. Drives remove-cert cleanup and
+     * frontend "cert files on disk" hint.
+     */
+    @Column(name = "host_nginx_managed", nullable = false)
+    private boolean hostNginxManaged = true;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
@@ -98,6 +107,9 @@ public class SslCertificate {
 
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
+
+    public boolean isHostNginxManaged() { return hostNginxManaged; }
+    public void setHostNginxManaged(boolean hostNginxManaged) { this.hostNginxManaged = hostNginxManaged; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
