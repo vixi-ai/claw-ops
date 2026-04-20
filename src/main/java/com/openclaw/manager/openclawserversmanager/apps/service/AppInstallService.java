@@ -34,6 +34,8 @@ public class AppInstallService {
 
     private static final Logger log = LoggerFactory.getLogger(AppInstallService.class);
     private static final int INSTALL_TIMEOUT_SECONDS = 600;
+    private static final int UPDATE_TIMEOUT_SECONDS = 300;
+    private static final int UNINSTALL_TIMEOUT_SECONDS = 120;
     private static final int STATUS_PROBE_TIMEOUT_SECONDS = 15;
     private static final int MAX_OUTPUT_BYTES = 16 * 1024;
 
@@ -129,6 +131,76 @@ public class AppInstallService {
             } else {
                 auditService.log(AuditAction.APP_INSTALL_FAILED, "CHAT_APP", serverId, userId,
                         "Chat app install failed on '%s' with exit %d".formatted(server.getName(), res.exitCode()));
+            }
+        } catch (Exception ignored) { /* audit is best-effort */ }
+
+        return new ChatInstallResult(res.exitCode(), truncated, durationMs);
+    }
+
+    /**
+     * Pull the latest chat image and recreate the container.
+     * Leaves .env + nginx config + cert mount intact.
+     */
+    public ChatInstallResult updateChatApp(UUID serverId, UUID userId) {
+        Server server = serverService.getServerEntity(serverId);
+        long started = System.currentTimeMillis();
+
+        String cmd = "cd /opt/claw-chat && "
+                + "sudo docker compose pull 2>&1 && "
+                + "sudo docker compose up -d --remove-orphans 2>&1";
+
+        CommandResult res = sshService.executeCommand(server, cmd, UPDATE_TIMEOUT_SECONDS);
+        long durationMs = System.currentTimeMillis() - started;
+
+        String combined = ((res.stdout() == null ? "" : res.stdout())
+                + (res.stderr() == null || res.stderr().isBlank() ? "" : "\n[stderr]\n" + res.stderr()));
+        String truncated = truncate(combined);
+
+        try {
+            if (res.exitCode() == 0) {
+                auditService.log(AuditAction.APP_UPDATED, "CHAT_APP", serverId, userId,
+                        "Chat app updated on '%s'".formatted(server.getName()));
+            } else {
+                auditService.log(AuditAction.APP_UPDATE_FAILED, "CHAT_APP", serverId, userId,
+                        "Chat app update failed on '%s' with exit %d".formatted(server.getName(), res.exitCode()));
+            }
+        } catch (Exception ignored) { /* audit is best-effort */ }
+
+        return new ChatInstallResult(res.exitCode(), truncated, durationMs);
+    }
+
+    /**
+     * Stop and remove the chat containers + wipe {@code /opt/claw-chat}. SSL cert,
+     * DNS record, and server itself are untouched — this is an app-level uninstall.
+     */
+    public ChatInstallResult uninstallChatApp(UUID serverId, UUID userId) {
+        Server server = serverService.getServerEntity(serverId);
+        long started = System.currentTimeMillis();
+
+        // Best-effort teardown: each command tolerates missing pieces so a partial
+        // install (no compose file, no containers, etc.) still gets cleaned up.
+        String cmd = "set +e; "
+                + "if [ -f /opt/claw-chat/docker-compose.yml ]; then "
+                + "  cd /opt/claw-chat && sudo docker compose down -v 2>&1; "
+                + "fi; "
+                + "sudo docker rm -f claw-chat claw-nginx 2>/dev/null; "
+                + "sudo rm -rf /opt/claw-chat; "
+                + "echo 'uninstall complete'";
+
+        CommandResult res = sshService.executeCommand(server, cmd, UNINSTALL_TIMEOUT_SECONDS);
+        long durationMs = System.currentTimeMillis() - started;
+
+        String combined = ((res.stdout() == null ? "" : res.stdout())
+                + (res.stderr() == null || res.stderr().isBlank() ? "" : "\n[stderr]\n" + res.stderr()));
+        String truncated = truncate(combined);
+
+        try {
+            if (res.exitCode() == 0) {
+                auditService.log(AuditAction.APP_UNINSTALLED, "CHAT_APP", serverId, userId,
+                        "Chat app uninstalled on '%s'".formatted(server.getName()));
+            } else {
+                auditService.log(AuditAction.APP_UNINSTALL_FAILED, "CHAT_APP", serverId, userId,
+                        "Chat app uninstall failed on '%s' with exit %d".formatted(server.getName(), res.exitCode()));
             }
         } catch (Exception ignored) { /* audit is best-effort */ }
 

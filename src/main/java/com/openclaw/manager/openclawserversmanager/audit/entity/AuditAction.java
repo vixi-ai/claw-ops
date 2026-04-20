@@ -93,5 +93,9 @@ public enum AuditAction {
 
     // App installation
     APP_INSTALLED,
-    APP_INSTALL_FAILED
+    APP_INSTALL_FAILED,
+    APP_UPDATED,
+    APP_UPDATE_FAILED,
+    APP_UNINSTALLED,
+    APP_UNINSTALL_FAILED
 }
