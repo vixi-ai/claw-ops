@@ -104,10 +104,16 @@ public class ProvisioningRunner {
         job.appendLog("Starting SSL provisioning for " + hostname);
 
         try {
-            // Step 1: Ensure nginx installed
+            // Step 1: Ensure nginx + certbot installed (distro-aware — apt/dnf/apk/pacman/zypper).
             if (isCancelled(job)) return;
             updateStep(job, ProvisioningStep.PENDING_DNS, "Ensuring nginx + certbot are installed");
-            acmeService.ensureNginxInstalled(server);
+            try {
+                acmeService.ensureNginxAndCertbot(server);
+            } catch (Exception installEx) {
+                failJob(job, ProvisioningStep.FAILED_RETRYABLE,
+                        "Install step failed: " + installEx.getMessage());
+                return;
+            }
 
             // Step 2: Run certbot DNS-01 (handles TXT record creation, propagation, and cert issuance)
             if (isCancelled(job)) return;

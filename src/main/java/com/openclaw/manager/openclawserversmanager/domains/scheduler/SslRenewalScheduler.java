@@ -5,7 +5,7 @@ import com.openclaw.manager.openclawserversmanager.domains.entity.SslCertificate
 import com.openclaw.manager.openclawserversmanager.domains.entity.SslStatus;
 import com.openclaw.manager.openclawserversmanager.domains.repository.SslCertificateRepository;
 import com.openclaw.manager.openclawserversmanager.domains.service.AcmeService;
-import com.openclaw.manager.openclawserversmanager.domains.service.NginxConfigService;
+import com.openclaw.manager.openclawserversmanager.domains.service.NginxConfigService; // kept for future use
 import com.openclaw.manager.openclawserversmanager.notifications.service.NotificationDispatchService;
 import com.openclaw.manager.openclawserversmanager.servers.entity.Server;
 import com.openclaw.manager.openclawserversmanager.servers.repository.ServerRepository;
@@ -113,7 +113,7 @@ public class SslRenewalScheduler {
 
             try {
                 CommandResult result = sshService.executeCommand(server,
-                        "sudo certbot renew --cert-name %s --non-interactive".formatted(cert.getHostname()),
+                        AcmeService.sudoWithPath("certbot renew --cert-name %s --non-interactive").formatted(cert.getHostname()),
                         SSH_TIMEOUT);
 
                 if (result.exitCode() == 0) {
@@ -189,7 +189,7 @@ public class SslRenewalScheduler {
     private Instant parseExpiry(Server server, String hostname) {
         try {
             CommandResult result = sshService.executeCommand(server,
-                    "sudo certbot certificates --cert-name %s".formatted(hostname), 60);
+                    AcmeService.sudoWithPath("certbot certificates --cert-name %s").formatted(hostname), 60);
             if (result.exitCode() == 0) {
                 Matcher matcher = EXPIRY_PATTERN.matcher(result.stdout());
                 if (matcher.find()) {

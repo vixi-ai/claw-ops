@@ -13,6 +13,8 @@ import com.openclaw.manager.openclawserversmanager.secrets.service.SecretService
 import com.openclaw.manager.openclawserversmanager.servers.entity.Server;
 import com.openclaw.manager.openclawserversmanager.ssh.model.CommandResult;
 import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
+import com.openclaw.manager.openclawserversmanager.ssh.service.SystemPackageService;
+import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -52,17 +54,30 @@ public class AcmeService {
     private final ProviderAdapterFactory providerAdapterFactory;
     private final SecretService secretService;
     private final SshService sshService;
+    private final SystemPackageService systemPackageService;
 
     public AcmeService(ManagedZoneService managedZoneService,
                        ProviderAccountService providerAccountService,
                        ProviderAdapterFactory providerAdapterFactory,
                        SecretService secretService,
-                       SshService sshService) {
+                       SshService sshService,
+                       SystemPackageService systemPackageService) {
         this.managedZoneService = managedZoneService;
         this.providerAccountService = providerAccountService;
         this.providerAdapterFactory = providerAdapterFactory;
         this.secretService = secretService;
         this.sshService = sshService;
+        this.systemPackageService = systemPackageService;
+    }
+
+    /**
+     * Returns a sudo invocation that always finds binaries in common locations —
+     * {@code /usr/local/bin}, {@code /snap/bin}, etc. — regardless of the remote sudoers
+     * {@code secure_path} config. Use this instead of raw {@code sudo CMD} for any binary
+     * that might live outside {@code /usr/bin}.
+     */
+    public static String sudoWithPath(String cmd) {
+        return "sudo env PATH=\"/usr/local/sbin:/usr/local/bin:/snap/bin:/usr/sbin:/usr/bin:/sbin:/bin\" " + cmd;
     }
 
     public String createAcmeChallengeTxtRecord(DomainAssignment assignment, String challengeValue) {
@@ -121,17 +136,26 @@ public class AcmeService {
         String safeHostname = hostname.replace(".", "-");
 
         try {
-            // 1. Single SSH: check cert + install certbot + setup signals (batched)
+            // 1. Single SSH: check cert presence + verify certbot is on PATH + setup signals.
+            //    Certbot install is handled earlier by ensureNginxAndCertbot() — this is just
+            //    a safety check; if it's still missing, fail fast with an actionable error.
             CommandResult setup = sshService.executeCommand(server,
                     "sudo test -f /etc/letsencrypt/live/%s/fullchain.pem && echo 'CERT_EXISTS' || echo 'CERT_MISSING'; ".formatted(hostname) +
-                    "command -v certbot >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq certbot); " +
+                    "command -v certbot >/dev/null 2>&1 || echo 'CERTBOT_MISSING'; " +
                     "mkdir -p %s; rm -f %s/%s.validation %s/%s.ready".formatted(
                             signalDir, signalDir, safeHostname, signalDir, safeHostname),
-                    300);
+                    60);
 
             if (setup.stdout().contains("CERT_EXISTS")) {
                 log.info("Valid cert already exists for {} — skipping certbot", hostname);
                 return new CertbotResult(0, "Existing certificate found", null, null);
+            }
+
+            if (setup.stdout().contains("CERTBOT_MISSING")) {
+                return new CertbotResult(1, setup.stdout(),
+                        "certbot is not installed / not on PATH on this server. "
+                                + "Run Provision again so the installer retries, or install certbot manually.",
+                        null);
             }
 
             // 2. Upload hook scripts (2 SSH connections — unavoidable for SFTP)
@@ -145,9 +169,9 @@ public class AcmeService {
                     cleanupPath);
 
             // 3. Single SSH: chmod + launch certbot in background
-            String certbotCmd = "sudo certbot certonly --manual --preferred-challenges dns-01 " +
+            String certbotCmd = sudoWithPath("certbot certonly --manual --preferred-challenges dns-01 " +
                     "-d %s --cert-name %s --manual-auth-hook %s --manual-cleanup-hook %s " +
-                    "--non-interactive --agree-tos --email %s";
+                    "--non-interactive --agree-tos --email %s");
             String fullCmd = certbotCmd.formatted(hostname, hostname, authPath, cleanupPath, adminEmail);
             String logFile = signalDir + "/certbot-" + safeHostname + ".log";
             String pidFile = signalDir + "/certbot-" + safeHostname + ".pid";
@@ -238,19 +262,45 @@ public class AcmeService {
 
     public void deleteCertbotCert(Server server, String hostname) {
         sshService.executeCommand(server,
-                "sudo certbot delete --cert-name %s --non-interactive 2>/dev/null || true".formatted(hostname), 30);
+                sudoWithPath("certbot delete --cert-name %s --non-interactive 2>/dev/null || true").formatted(hostname), 30);
     }
 
-    public void ensureNginxInstalled(Server server) {
-        // Single SSH: check + install + start (batched)
-        CommandResult result = sshService.executeCommand(server,
-                "command -v nginx >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq nginx); " +
-                "sudo systemctl enable nginx 2>/dev/null; " +
-                "sudo systemctl is-active --quiet nginx || sudo systemctl start nginx; " +
-                "echo 'NGINX_OK'", 300);
-        if (!result.stdout().contains("NGINX_OK")) {
-            throw new RuntimeException("Failed to ensure nginx: " + result.stderr());
+    /**
+     * Installs nginx + certbot on the remote host via the distro-appropriate package manager
+     * ({@link SystemPackageService}), then starts nginx. Handles Debian/Ubuntu, RHEL family,
+     * Alpine, Arch, and openSUSE. Falls back to snap for certbot on Ubuntu images where apt
+     * lacks the package. Throws {@link DomainException} with actionable text on failure.
+     */
+    public void ensureNginxAndCertbot(Server server) {
+        SystemPackageService.InstallResult result = systemPackageService.ensureInstalled(server, "nginx", "certbot");
+        if (!result.success()) {
+            log.error("Package install failed on '{}' (distro {}): {}", server.getName(),
+                    result.distroId(), result.errorMessage());
+            log.debug("Install raw output:\n{}", result.rawOutput());
+            throw new DomainException(result.errorMessage() != null
+                    ? result.errorMessage()
+                    : "Failed to install nginx + certbot on " + server.getName());
         }
+
+        // Start nginx — systemd first (most distros), fall back to OpenRC (Alpine) or service cmd.
+        CommandResult start = sshService.executeCommand(server,
+                "( sudo systemctl enable --now nginx 2>/dev/null ) " +
+                "|| ( sudo rc-update add nginx default 2>/dev/null && sudo rc-service nginx start 2>/dev/null ) " +
+                "|| ( sudo service nginx start 2>/dev/null ); " +
+                "echo 'NGINX_START_DONE'", 60);
+        if (!start.stdout().contains("NGINX_START_DONE")) {
+            log.warn("nginx start command did not confirm OK on '{}' (stderr: {})",
+                    server.getName(), start.stderr());
+        }
+    }
+
+    /**
+     * @deprecated Use {@link #ensureNginxAndCertbot(Server)} which also installs certbot
+     * and works across distros. Kept for API compatibility.
+     */
+    @Deprecated
+    public void ensureNginxInstalled(Server server) {
+        ensureNginxAndCertbot(server);
     }
 
     public record CertbotResult(int exitCode, String output, String error, String txtRecordId) {

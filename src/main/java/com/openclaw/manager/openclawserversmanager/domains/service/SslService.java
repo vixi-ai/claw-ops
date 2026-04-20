@@ -132,7 +132,7 @@ public class SslService {
 
         try {
             CommandResult result = sshService.executeCommand(server,
-                    "sudo certbot renew --cert-name %s --non-interactive".formatted(cert.getHostname()),
+                    AcmeService.sudoWithPath("certbot renew --cert-name %s --non-interactive").formatted(cert.getHostname()),
                     SSH_TIMEOUT);
 
             if (result.exitCode() != 0) {
@@ -214,7 +214,7 @@ public class SslService {
 
         try {
             CommandResult result = sshService.executeCommand(server,
-                    "sudo certbot certificates --cert-name %s".formatted(cert.getHostname()), 60);
+                    AcmeService.sudoWithPath("certbot certificates --cert-name %s").formatted(cert.getHostname()), 60);
 
             if (result.exitCode() == 0) {
                 Matcher matcher = EXPIRY_PATTERN.matcher(result.stdout());
@@ -297,7 +297,7 @@ public class SslService {
     private Instant readCertExpiry(Server server, String hostname) {
         try {
             CommandResult result = sshService.executeCommand(server,
-                    "sudo certbot certificates --cert-name %s".formatted(hostname), 60);
+                    AcmeService.sudoWithPath("certbot certificates --cert-name %s").formatted(hostname), 60);
             if (result.exitCode() == 0) {
                 Matcher matcher = EXPIRY_PATTERN.matcher(result.stdout());
                 if (matcher.find()) {
