@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -51,5 +52,21 @@ public class AppController {
         // Return 200 regardless of install exit code so the frontend can render the log;
         // exitCode in the body signals real success/failure.
         return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/chat/update")
+    @Operation(summary = "Pull the latest claw-chat image and recreate the container")
+    public ResponseEntity<ChatInstallResult> update(@PathVariable UUID serverId,
+                                                    Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        return ResponseEntity.ok(appInstallService.updateChatApp(serverId, userId));
+    }
+
+    @DeleteMapping("/chat")
+    @Operation(summary = "Remove claw-chat containers + /opt/claw-chat (does not touch SSL or DNS)")
+    public ResponseEntity<ChatInstallResult> uninstall(@PathVariable UUID serverId,
+                                                       Authentication authentication) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        return ResponseEntity.ok(appInstallService.uninstallChatApp(serverId, userId));
     }
 }
