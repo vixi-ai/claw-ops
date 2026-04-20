@@ -31,4 +31,20 @@ public class AsyncConfig implements AsyncConfigurer {
         exec.initialize();
         return exec;
     }
+
+    /**
+     * Isolated pool for async domain-assignment jobs. Kept separate from
+     * {@link #provisioningExecutor()} so that slow DNS propagation checks can't starve
+     * SSL provisioning (and vice versa).
+     */
+    @Bean(name = "domainAssignmentExecutor")
+    public ThreadPoolTaskExecutor domainAssignmentExecutor() {
+        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+        exec.setCorePoolSize(2);
+        exec.setMaxPoolSize(5);
+        exec.setQueueCapacity(20);
+        exec.setThreadNamePrefix("dns-assign-");
+        exec.initialize();
+        return exec;
+    }
 }

@@ -61,8 +61,25 @@ public class ProvisioningRunner {
 
     @Async("provisioningExecutor")
     public void run(UUID jobId) {
-        ProvisioningJob job = jobRepository.findById(jobId).orElse(null);
-        if (job == null || job.getStatus() == ProvisioningJobStatus.CANCELLED) {
+        // Retry the initial lookup to tolerate the async-vs-transaction visibility race: if
+        // the caller's @Transactional hasn't committed yet, the row is invisible to a fresh
+        // session. Orchestrators should defer dispatch via afterCommit but this is belt-and-
+        // suspenders so a stuck job never means "silent" failure.
+        ProvisioningJob job = null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            job = jobRepository.findById(jobId).orElse(null);
+            if (job != null) break;
+            try { Thread.sleep(500); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+        }
+        if (job == null) {
+            // Row either doesn't exist OR was INSERTed by a tx that has yet to commit.
+            // Mark it FAILED directly via UPDATE so operators see a failure instead of a
+            // phantom RUNNING row.
+            log.error("Provisioning job {} not visible after 3 retries — giving up and marking FAILED", jobId);
+            try { jobRepository.markFailedById(jobId, "Runner could not load job row (tx visibility)"); } catch (Exception ignored) { }
+            return;
+        }
+        if (job.getStatus() == ProvisioningJobStatus.CANCELLED) {
             return;
         }
 

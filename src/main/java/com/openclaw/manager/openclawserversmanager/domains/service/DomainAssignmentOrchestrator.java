@@ -17,6 +17,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -84,8 +86,21 @@ public class DomainAssignmentOrchestrator {
         log.info("Triggered domain assignment job {} for hostname {} (server {})",
                 job.getId(), assignment.getHostname(), assignment.getResourceId());
 
-        runner.run(job.getId());
+        dispatchAfterCommit(job.getId());
         return DomainAssignmentJobMapper.toResponse(job, assignment.getHostname());
+    }
+
+    private void dispatchAfterCommit(UUID jobId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    runner.run(jobId);
+                }
+            });
+        } else {
+            runner.run(jobId);
+        }
     }
 
     @Transactional
@@ -114,7 +129,7 @@ public class DomainAssignmentOrchestrator {
         job.appendLog("Retry #" + job.getRetryCount() + " triggered by user " + userId);
         job = jobRepository.saveAndFlush(job);
 
-        runner.run(job.getId());
+        dispatchAfterCommit(job.getId());
         return DomainAssignmentJobMapper.toResponse(job, assignment.getHostname());
     }
 

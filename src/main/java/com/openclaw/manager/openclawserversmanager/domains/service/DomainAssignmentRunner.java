@@ -81,10 +81,23 @@ public class DomainAssignmentRunner {
         this.provisioningOrchestrator = provisioningOrchestrator;
     }
 
-    @Async("provisioningExecutor")
+    @Async("domainAssignmentExecutor")
     public void run(UUID jobId) {
-        DomainAssignmentJob job = jobRepository.findById(jobId).orElse(null);
-        if (job == null || job.getStatus() == DomainJobStatus.CANCELLED) {
+        // Retry findById to tolerate the tx-visibility race (caller's @Transactional may
+        // not have committed yet when the @Async proxy schedules us). Orchestrators should
+        // dispatch via afterCommit but this is belt-and-suspenders.
+        DomainAssignmentJob job = null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            job = jobRepository.findById(jobId).orElse(null);
+            if (job != null) break;
+            try { Thread.sleep(500); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+        }
+        if (job == null) {
+            log.error("Domain assignment job {} not visible after 3 retries — giving up and marking FAILED", jobId);
+            try { jobRepository.markFailedById(jobId, "Runner could not load job row (tx visibility)"); } catch (Exception ignored) { }
+            return;
+        }
+        if (job.getStatus() == DomainJobStatus.CANCELLED) {
             return;
         }
 

@@ -19,6 +19,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -97,10 +99,26 @@ public class ProvisioningOrchestrator {
         log.info("Triggered SSL provisioning job {} for hostname {} on server {}",
                 job.getId(), assignment.getHostname(), assignment.getResourceId());
 
-        // Fire async — returns immediately
-        provisioningRunner.run(job.getId());
+        // Defer async dispatch until AFTER the current tx commits — otherwise the runner
+        // can race in a separate transaction and fail to see the freshly INSERTed row
+        // (PostgreSQL READ_COMMITTED only exposes committed rows to other sessions).
+        dispatchAfterCommit(job.getId());
 
         return ProvisioningJobMapper.toResponse(job, assignment.getHostname());
+    }
+
+    private void dispatchAfterCommit(UUID jobId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    provisioningRunner.run(jobId);
+                }
+            });
+        } else {
+            // No active transaction (shouldn't happen for @Transactional methods) — dispatch directly.
+            provisioningRunner.run(jobId);
+        }
     }
 
     /**
@@ -134,7 +152,7 @@ public class ProvisioningOrchestrator {
         job.appendLog("Retry #" + job.getRetryCount() + " triggered by user " + userId);
         job = jobRepository.saveAndFlush(job);
 
-        provisioningRunner.run(job.getId());
+        dispatchAfterCommit(job.getId());
 
         return ProvisioningJobMapper.toResponse(job, assignment.getHostname());
     }

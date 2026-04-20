@@ -5,6 +5,10 @@ import com.openclaw.manager.openclawserversmanager.domains.entity.DomainJobStatu
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -29,4 +33,15 @@ public interface DomainAssignmentJobRepository extends JpaRepository<DomainAssig
     Page<DomainAssignmentJob> findByServerId(UUID serverId, Pageable pageable);
 
     Page<DomainAssignmentJob> findByServerIdAndStatus(UUID serverId, DomainJobStatus status, Pageable pageable);
+
+    /**
+     * Force-fail a job row via direct UPDATE. Last-resort when the runner can't load the
+     * entity after retries.
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE DomainAssignmentJob j SET j.status = com.openclaw.manager.openclawserversmanager.domains.entity.DomainJobStatus.FAILED, " +
+            "j.currentStep = com.openclaw.manager.openclawserversmanager.domains.entity.DomainJobStep.FAILED_PERMANENT, " +
+            "j.errorMessage = :msg, j.finishedAt = CURRENT_TIMESTAMP WHERE j.id = :id")
+    int markFailedById(@Param("id") UUID id, @Param("msg") String msg);
 }
