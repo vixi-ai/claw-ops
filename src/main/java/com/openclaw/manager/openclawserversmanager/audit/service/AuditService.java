@@ -12,7 +12,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Service
@@ -53,6 +55,13 @@ public class AuditService {
     public Page<AuditLogResponse> getLogsForEntity(String entityType, UUID entityId, Pageable pageable) {
         return auditLogRepository.findByEntityTypeAndEntityId(entityType, entityId, pageable)
                 .map(this::toResponse);
+    }
+
+    @Transactional
+    public long deleteOldAuditLogs(Instant before) {
+        long deleted = auditLogRepository.deleteByCreatedAtBefore(before);
+        log.info("Deleted {} audit log entries older than {}", deleted, before);
+        return deleted;
     }
 
     private AuditLogResponse toResponse(AuditLog entry) {
