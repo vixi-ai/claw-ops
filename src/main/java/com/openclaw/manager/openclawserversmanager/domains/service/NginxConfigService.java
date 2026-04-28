@@ -159,6 +159,31 @@ public class NginxConfigService {
     }
 
     /**
+     * Stop and disable the host nginx service so a subsequent app (chat sidecar,
+     * custom server, traefik, …) can claim ports 80/443. Tries systemd, OpenRC
+     * (Alpine), and SysV {@code service} in that order — same fallback
+     * {@code AcmeService.ensureNginxAndCertbot} uses for the start command.
+     *
+     * <p>Best-effort: never throws. Returns the raw shell output so the caller
+     * (provisioning job) can append it to the user-visible log.
+     */
+    public String stopAndDisableHostNginx(Server server) {
+        CommandResult res = sshService.executeCommand(server,
+                "( sudo systemctl disable --now nginx 2>/dev/null ) " +
+                "|| ( sudo rc-service nginx stop 2>/dev/null && sudo rc-update del nginx default 2>/dev/null ) " +
+                "|| ( sudo service nginx stop 2>/dev/null ); " +
+                "echo 'NGINX_STOP_DONE'", 30);
+        String out = res.stdout() == null ? "" : res.stdout();
+        if (!out.contains("NGINX_STOP_DONE")) {
+            log.warn("Host nginx stop command did not confirm OK on '{}' (stderr: {})",
+                    server.getName(), res.stderr());
+        } else {
+            log.info("Host nginx stopped and disabled on '{}'", server.getName());
+        }
+        return out;
+    }
+
+    /**
      * Tests nginx config and gracefully reloads. Returns the test result.
      * Throws DomainException if nginx -t fails.
      */

@@ -177,6 +177,22 @@ public class ProvisioningRunner {
                 job.appendLog("Verification: HTTPS=%s, TLS=%s, expiry=%s".formatted(
                         verification.httpsReachable(), verification.tlsValid(), verification.certExpiry()));
                 certExpiry = verification.certExpiry();
+
+                // Step 4b: Free ports 80/443 for the user's own app (chat sidecar,
+                // custom server, traefik, …). The cert files at /etc/letsencrypt/live/
+                // stay on disk for whatever picks up reverse-proxy duty next, and
+                // certbot DNS-01 renewals don't need nginx. Without this teardown
+                // the host nginx we started in Step 1 stays bound to 80/443 and
+                // every subsequent install fails with a port conflict.
+                nginxConfigService.removeConfig(server, hostname);
+                String stopLog = nginxConfigService.stopAndDisableHostNginx(server);
+                if (stopLog != null && !stopLog.isBlank()) {
+                    job.appendLog(stopLog);
+                }
+                job.appendLog("Host nginx stopped and disabled. "
+                        + "Cert at /etc/letsencrypt/live/" + hostname + "/ — "
+                        + "mount fullchain.pem + privkey.pem into your reverse proxy.");
+                jobRepository.save(job);
             } else {
                 // Co-existence mode: host nginx is NOT managed by us. Skip DEPLOYING_CONFIG
                 // and VERIFYING entirely — the cert is on disk, the user's reverse proxy
@@ -203,7 +219,9 @@ public class ProvisioningRunner {
             cert.setLastRenewedAt(Instant.now());
             cert.setLastError(null);
             cert.setProvisioningJobId(job.getId());
-            cert.setHostNginxManaged(install.hostNginxManaged());
+            // Always false after a successful run: in managed mode we just tore
+            // host nginx down (Step 4b); in co-existence mode we never owned it.
+            cert.setHostNginxManaged(false);
             sslCertificateRepository.save(cert);
 
             try {
