@@ -16,7 +16,9 @@ import com.openclaw.manager.openclawserversmanager.ssh.model.CommandResult;
 import com.openclaw.manager.openclawserversmanager.ssh.service.SshService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -76,7 +78,9 @@ public class AppInstallService {
         // request. Require it from the caller — the frontend already knows its
         // backend URL and sends it.
         if (req.apiOrigin() == null || req.apiOrigin().isBlank()) {
-            throw new IllegalArgumentException(
+            // Belt-and-suspenders: the DTO is @NotBlank-validated, but direct
+            // API callers that bypass @Valid still need a 400, not a 500.
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "apiOrigin is required — pass the ClawOps backend's public URL "
                             + "(e.g. https://clawops.example.com). The frontend pre-fills this; "
                             + "direct API callers must include it explicitly.");
