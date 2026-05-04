@@ -1,5 +1,7 @@
 package com.openclaw.manager.openclawserversmanager.common.exception;
 
+import com.github.dockerjava.api.exception.DockerClientException;
+import com.github.dockerjava.api.exception.NotFoundException;
 import com.openclaw.manager.openclawserversmanager.common.dto.ErrorResponse;
 import com.openclaw.manager.openclawserversmanager.domains.exception.DnsProviderException;
 import com.openclaw.manager.openclawserversmanager.domains.exception.DomainException;
@@ -89,6 +91,20 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ErrorResponse.of(400, "Bad Request", ex.getMessage()));
+    }
+
+    @ExceptionHandler(NotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleDockerNotFound(NotFoundException ex) {
+        log.warn("Docker resource not found: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ErrorResponse.of(502, "Bad Gateway", "Docker daemon could not find the requested resource"));
+    }
+
+    @ExceptionHandler(DockerClientException.class)
+    public ResponseEntity<ErrorResponse> handleDockerClient(DockerClientException ex) {
+        log.warn("Docker client error: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ErrorResponse.of(502, "Bad Gateway", "Docker daemon error"));
     }
 
     @ExceptionHandler(Exception.class)

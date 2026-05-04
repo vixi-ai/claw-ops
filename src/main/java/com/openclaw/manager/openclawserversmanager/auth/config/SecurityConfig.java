@@ -75,6 +75,9 @@ public class SecurityConfig {
                         // ADMIN only
                         auth.requestMatchers("/api/v1/users/**").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers("/api/v1/audit/**").hasAuthority("ROLE_ADMIN");
+                        auth.requestMatchers("/api/v1/container-logs/**").hasAuthority("ROLE_ADMIN");
+                        // Actuator: ADMIN only for prod-sensitive endpoints; health is left open by Spring Boot defaults
+                        auth.requestMatchers("/actuator/**").hasAuthority("ROLE_ADMIN");
                         // Deployment scripts: create/update/delete ADMIN only
                         auth.requestMatchers(HttpMethod.POST, "/api/v1/deployment-scripts").hasAuthority("ROLE_ADMIN");
                         auth.requestMatchers(HttpMethod.PATCH, "/api/v1/deployment-scripts/**").hasAuthority("ROLE_ADMIN");
