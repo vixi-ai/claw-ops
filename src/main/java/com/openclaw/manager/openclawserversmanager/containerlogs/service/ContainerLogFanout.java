@@ -25,11 +25,10 @@ public class ContainerLogFanout {
 
     private final Map<ContainerService, CopyOnWriteArrayList<WebSocketSession>> subscribers = new EnumMap<>(ContainerService.class);
     private final Map<String, AtomicInteger> outboxSize = new ConcurrentHashMap<>();
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final ContainerLogsProperties props;
 
-    public ContainerLogFanout(ObjectMapper objectMapper, ContainerLogsProperties props) {
-        this.objectMapper = objectMapper;
+    public ContainerLogFanout(ContainerLogsProperties props) {
         this.props = props;
         for (ContainerService s : ContainerService.values()) {
             subscribers.put(s, new CopyOnWriteArrayList<>());

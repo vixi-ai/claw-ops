@@ -33,18 +33,16 @@ public class ContainerLogsWebSocketHandler extends TextWebSocketHandler {
     private final ContainerLogFanout fanout;
     private final ContainerLogRepository repository;
     private final ContainerLogsProperties props;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public ContainerLogsWebSocketHandler(ContainerLogsTicketService ticketService,
                                          ContainerLogFanout fanout,
                                          ContainerLogRepository repository,
-                                         ContainerLogsProperties props,
-                                         ObjectMapper objectMapper) {
+                                         ContainerLogsProperties props) {
         this.ticketService = ticketService;
         this.fanout = fanout;
         this.repository = repository;
         this.props = props;
-        this.objectMapper = objectMapper;
     }
 
     @Override
